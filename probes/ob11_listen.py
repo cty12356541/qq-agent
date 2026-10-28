@@ -3,7 +3,7 @@
 
 用法:
     uv run python probes/ob11_listen.py                # 仅监听落盘
-    uv run python probes/ob11_listen.py --send-group 70000 "ping"
+    uv run python probes/ob11_listen.py --send-group 70000 --text "ping"
 """
 import argparse
 import asyncio
