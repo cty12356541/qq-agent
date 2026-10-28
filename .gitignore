@@ -5,5 +5,4 @@ data/
 .env
 .env.*
 tools/
-!tools/.gitkeep
 docs/evidence/*.log
