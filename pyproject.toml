@@ -1,0 +1,14 @@
+[project]
+name = "qq-agent"
+version = "0.1.0"
+description = "QQ AI 机器人 — 跑在 llmos 上的自用小圈子智能体（M0 探针阶段）"
+requires-python = ">=3.12"
+dependencies = [
+    "websockets>=13",
+]
+
+[dependency-groups]
+dev = ["pytest>=8"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
