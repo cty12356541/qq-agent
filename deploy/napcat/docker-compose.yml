@@ -1,0 +1,32 @@
+# NapCat 纯容器化部署编排（契合 E-004：宿主 Windows 登主号，Bot 纯容器隔离）
+# 启动命令（在仓库根目录执行）：
+#   docker compose -f deploy/napcat/docker-compose.yml up -d
+
+services:
+  napcat:
+    image: mlikiowa/napcat-docker:latest
+    container_name: qq-agent-napcat
+    hostname: qq-agent-napcat
+    restart: unless-stopped
+    env_file:
+      - path: ../../.env
+        required: false
+    environment:
+      TZ: "${TZ:-Asia/Shanghai}"
+      NAPCAT_UID: "${NAPCAT_UID:-1000}"
+      NAPCAT_GID: "${NAPCAT_GID:-1000}"
+      ACCOUNT: "${QQ_BOT_ID:-}"
+    ports:
+      # 安全硬约束：严禁暴露 0.0.0.0，仅绑定本机回环地址 127.0.0.1
+      - "127.0.0.1:3001:3001"  # OneBot v11 正向 WebSocket 服务端口
+      - "127.0.0.1:6099:6099"  # NapCat WebUI 管理与扫码面板端口
+    volumes:
+      # QQ NT 登录态/设备信息与 NapCat 配置分离持久化，容器重启或升级免重复扫码
+      - napcat_qq_data:/app/.config/QQ
+      - napcat_config:/app/napcat/config
+
+volumes:
+  napcat_qq_data:
+    name: qq_agent_napcat_qq_data
+  napcat_config:
+    name: qq_agent_napcat_config

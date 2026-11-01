@@ -1,17 +1,19 @@
-# M0 证据：Channel 端到端 + Budget 扣减探针（Task 6）
+# M0 证据：Channel 端到端 + Budget 扣减探针（Task 6 · 含 W73/W80 闭环复验）
 
-> 交付物：本文件一个（简报 Step 2 的 BLOCKED 分支——T4 盘点确认 channel 是进程内 Rust 库、无 host 注册、Python 跨进程不可达，故**不写 `probes/llmos_channel_probe.py`**，缺口清单占满 Step 2 部分）。
-> 环境：Windows 11 Pro 10.0.28000；llmos `d4a9d34`（只读，全程 `git status --porcelain` 为空）；cargo workspace 37 crates dev profile（增量构建秒级）。
-> API 依据：`docs/evidence/m0-llmos-notes.md`（Task 4，行号已逐一复核仍然准确）。
+> **W73/W80 闭环复验更新（2026-11-01）**：上游 `llmos` 已在 W73 波次（`5e409b0f` / `f8b1687f` / `1c796212` / `2c6c9859`，当前只读复验快照 `48964eb5`）全量闭环 `L-001`~`L-007`，正式冻结第 9 个 SABI 通道 `nlos.sabi.ChannelControl` (`v1.0`)、挂载至 `system-control-daemon` 并交付 Python SDK `nlos_sdk.ChannelClient` (`v0.1.0`)。本仓已新增跨进程探针 `probes/llmos_channel_probe.py` 并实测 `EXIT_CODE=0`，**`Channel E2E（Python/跨进程收发）` 正式更新为 `PASS`**（见 §4）。
+>
+> **初探历史背景保留说明**：下文 §1–§3 完整保留 2026-10-28 基于 `llmos` `d4a9d34` 的 M0 初探记录与四项缺口分析（彼时 channel 尚无跨进程服务面，标记为 `BLOCKED`），以便对照审计上游 dogfood 反哺前后的演进闭环。
+> 环境：Windows 11 Pro 10.0.28000；Python 3.12.10（`qq-agent` `.venv`）；`llmos` 全程只读引用（`git status --porcelain` 为空）。
+> API 依据：`docs/evidence/m0-llmos-notes.md`（初探）+ `D:\llmos\sdk\python\nlos_sdk\channel.py`（W73/W80 复验）。
 
 ## 总判定
 
-| G0 判据 | 结论 |
-|---|---|
-| Channel 服务端能力（进程内） | **成立**——31 个权威侧测试全绿（本任务复跑 15 个指定 suite 用例 + T4 全量 31/0） |
-| Channel E2E（Python/跨进程收发） | **BLOCKED**——llmos 缺 proto、缺服务宿主注册、缺 SDK 绑定、缺能力签发设计；缺口清单见 §2 |
-| Budget 服务端机制（进程内） | **成立**——扣减恰好一次、耗尽 fail-closed 零写、重放零重复扣费、meter 有 OpenMetrics 渲染（§3） |
-| Budget SDK 侧可编程 | **否**——Python SDK 无任何 budget/meter API（T4 结论，本任务复核）；且无 LLM token 计量维度 |
+| G0 判据 | M0 初探基线（`d4a9d34`） | W73/W80 闭环复验结论（`48964eb5`） |
+|---|---|---|
+| Channel 服务端能力（进程内） | **成立**——31 个权威侧测试全绿（复跑 15 个指定 suite 用例 + T4 全量 31/0） | **PASS（成立）**——31/31 全绿，且已补齐 `[nlos-channel/<suite>]` 结构化轨迹输出（`L-007`） |
+| Channel E2E（Python/跨进程收发） | **BLOCKED**——缺 proto、缺服务宿主注册、缺 SDK 绑定、缺能力签发设计（见 §2） | **PASS**——`ChannelControl` SABI v1.0 已挂载 `system-control-daemon`，`probes/llmos_channel_probe.py` 跨进程驱动 `InboundMessage` / `OutboundReply` 收发闭环 exit 0（见 §4.2） |
+| Budget 服务端机制（进程内） | **成立**——扣减恰好一次、耗尽 fail-closed 零写、重放零重复扣费、meter 有 OpenMetrics 渲染（§3） | **PASS（成立）**——`nlos-resource` 升至 v8，新增五维 `llm_token_budgets` 表与 7/7 测试全绿（`L-005`，见 §4.3） |
+| Budget SDK 侧可编程 | **否**——Python SDK 无任何 budget/meter API；且无 LLM token 计量维度 | **M1 同口径本地护栏先行**——上游五维账本已在 `nlos-resource` v8 落地，跨进程 SABI 预算服务面暴露前，M1 采用同口径（调用数/Token/微美元）本地 SQLite 护栏执行（见 §4.3） |
 
 ---
 
@@ -199,3 +201,58 @@ test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; fini
 
 - llmos 只读自查：任务前后 `git -C D:\AI\llmos status --porcelain` 均为空；HEAD `d4a9d34` 未动。
 - 笔记行号抽查（ChannelAuthority 方法 11 处、daemon.rs 端点推导/能力策略、service_directory.proto、buf.gen.yaml）全部与 `m0-llmos-notes.md` 一致或已在文中更新为实测行号。
+
+---
+
+## 4. W73/W80 闭环复验（Channel E2E = **PASS** & 五维 LLM Token 预算对齐）
+
+### 4.1 上游缺口闭环核对（对照 §2 四缺口）
+
+§2 登记的四项缺口（归档于 `docs/evidence/dogfood-issues.md` `L-002`）已由 `llmos` W73 波次采用 canonical 路径 A 全量落地（复验工作树 `D:\llmos` HEAD `48964eb5`）：
+
+1. **Schema 冻结**：新增 `schema/nlos/sabi/v1/channel_control.proto`（`nlos.sabi.ChannelControl` `v1.0`，单帧上限 `64 KiB`）及生成物 `gen/python/nlos/sabi/v1/channel_control_pb2.py`（提交 `5e409b0f`）。
+2. **宿主挂载与目录注册**：`crates/nlos-system-control/src/channel_control.rs` 实现全量 9 方法（`create_channel`、`rotate_channel`、`enqueue`、`receive`、`ack`、`compact`、`inspect_channel`、`inspect_queue`、`register_queue_consumption`），挂载至 `system-control-daemon` 的 plain/auth 端点，并以 `service = "channel"` 注册入内置 `ServiceDirectory`。
+3. **Python SDK 导出与打包**：新增 `sdk/python/nlos_sdk/channel.py`（`ChannelClient` 及类型化记录/异常）与 `sdk/python/pyproject.toml`（`nlos_sdk.__version__ == "0.1.0"`，提交 `f8b1687f`）。
+4. **本地信任域与能力门禁**：`plain_socket` 依托本机 Named Pipe / `0600` UDS 本地信任域直接承载 SABI Envelope v1.1 请求（强制校验 caller 三元组、幂等键与回执）；上游跨语言一致性测试 `tests/conformance/ipc/channel_control.py` 6/6 全绿。
+
+### 4.2 本仓跨进程探针 `probes/llmos_channel_probe.py` 实测 —— **PASS**
+
+为验证 `qq-agent` 自身业务域类型在 `llmos` 持久化队列上的端到端表现，本仓编写并运行 `probes/llmos_channel_probe.py`：自举拉起 `D:\llmos\target\debug\system-control-daemon.exe`，通过 `nlos_sdk.ChannelClient` 创建 `inbound` 与 `outbound` 两条持久化 Channel（`capacity_bytes=65536`），分别将 `qq_agent.types.InboundMessage`（群聊 `@bot` 消息）与 `OutboundReply`（群聊回包）序列化入队、跨进程接收反序列化（100% 字段等价断言），并走完 `register_queue_consumption` → `ack` → `compact` → `inspect_queue` 队列清空闭环。
+
+**实测命令**：
+
+```powershell
+D:\AI\qq-agent\.venv\Scripts\python.exe probes\llmos_channel_probe.py
+```
+
+**真实运行输出摘录**：
+
+```text
+[probe] llmos root: D:\llmos
+[probe] nlos_sdk v0.1.0 import OK (service=channel, schema=nlos.sabi.ChannelControl)
+[probe] starting system-control-daemon via prebuilt (D:\llmos\target\debug\system-control-daemon.exe)
+[probe] daemon READY service=system_control root=C:\Users\ADMINI~1\AppData\Local\Temp\qq-agent-cc-probe-17024-1793531856587014900 auth_socket=\\.\pipe\qq-agent-cc-4280-1793531856587014900-1-auth plain_socket=\\.\pipe\qq-agent-cc-4280-1793531856587014900-2-plain principal=none operator_root_receipt=none
+
+[probe] === Phase 1: 创建 inbound / outbound 持久化 Channel 与幂等重放 ===
+[probe] channel 'inbound' created & idempotent replay OK: id=a7db9e77d61cab57... gen=1 cap=65536B
+[probe] channel 'outbound' created & idempotent replay OK: id=fc33693a42c5c98c... gen=1 cap=65536B
+
+[probe] === Phase 2: InboundMessage 跨进程队列闭环 ===
+[probe] inbound enqueue OK: seq=1 bytes=338
+[probe] inbound receive & decode 100% match: event_id=evt-m0-probe-001 session=group:70001 mentioned_bot=True
+[probe] inbound register -> ack -> compact -> inspect_queue OK: removed=1 reclaimed=338B outstanding=0
+
+[probe] === Phase 3: OutboundReply 跨进程队列闭环 ===
+[probe] outbound enqueue OK: seq=1 bytes=193
+[probe] outbound receive & decode 100% match: target=70001 at_user=10001 correlation_id=evt-m0-probe-001
+[probe] outbound register -> ack -> compact -> inspect_queue OK: removed=1 reclaimed=193B outstanding=0
+
+[probe] daemon stopped & temporary state root cleaned
+[probe] ALL PASS: InboundMessage & OutboundReply 经 llmos ChannelControl SABI v1.0 跨进程收发闭环通过
+EXIT_CODE=0
+```
+
+### 4.3 Budget 侧上游进展与 M1 护栏执行口径
+
+- **上游 `nlos-resource` v8 已落地五维 LLM Token 账本（`L-005` 闭环）**：`llmos` W73（提交 `1c796212` + `2c6c9859`）已将 `crates/nlos-resource` 升级至 `SCHEMA_VERSION = 8`（`migrate_v8`），新增 `llm_token_budgets`、`llm_token_consumptions`、`llm_token_budget_revisions` 三张 `STRICT` 表及 SQLite 触发器，支持 `max_prompt_tokens`、`max_completion_tokens`、`max_total_tokens`、`max_api_calls`、`max_cost_micros_usd` 五维配额、幂等扣减（`consume_llm_tokens`）、在线调额与 OpenMetrics 导出（`crates/nlos-resource/tests/llm_token_budget.rs` 7 项测试全绿）。
+- **跨进程服务面现状与 M1 护栏方案**：当前 `nlos_sdk` Python 客户端尚未暴露跨进程 SABI 预算扣减/查询 RPC 服务面（`sdk/python/nlos_sdk/` 导出面现为 `LocalRpcClient`、`ServiceDirectoryClient`、`ChannelClient`）。因此 M1 阶段 `qq-agent` 采用**与上游 `nlos-resource` v8 完全同口径（API 调用次数 / Prompt & Completion & Total Tokens / 微美元 `cost_micros_usd`）的本地 SQLite 预算护栏**执行频率限制、软限降级与硬限拒答，后续上游暴露跨进程预算 SABI 服务面后即可零模型变更平滑切换。
