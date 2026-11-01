@@ -29,7 +29,8 @@ _T = TypeVar("_T")
 _SYNTHETIC_PLACEHOLDERS: frozenset[str] = frozenset({"（戳了戳你）", "（回复了你）", "[图片]"})
 
 ActorState = Literal["IDLE", "RUNNING", "CLOSED"]
-SubmitRoute = Literal["debouncing", "steered", "followup"]
+TurnPriority = Literal["hard", "soft"]
+SubmitRoute = Literal["debouncing", "steered", "followup", "dropped_soft"]
 ToolHandler = Callable[[dict[str, Any], "CancelToken"], Awaitable[ToolOutcome | str]]
 BeforeStepHook = Callable[[int], str | None | Awaitable[str | None]]
 AfterStepHook = Callable[[ChatResult], Any]
@@ -161,6 +162,7 @@ class TurnEndEvent:
     total_tokens: int = 0
     total_cost_micros: int = 0
     cancelled: bool = False
+    latency_ms: float = 0.0
 
 
 AgentEvent = (
@@ -302,6 +304,7 @@ async def agent_loop(
     after_step: AfterStepHook | None = None,
 ) -> AsyncIterator[AgentEvent]:
     """Pi-Agent async generator loop with terminal short-circuit, parallel tools, and mid-turn steering."""
+    loop_start = time.perf_counter()
     effective_max_steps = max(1, int(max_steps))
     token = cancel_token if cancel_token is not None else CancelToken()
     loop_messages: list[ChatMessage] = list(messages)
@@ -316,6 +319,9 @@ async def agent_loop(
     total_cost_micros = 0
     last_text = ""
 
+    def _elapsed_ms() -> float:
+        return max(0.0, (time.perf_counter() - loop_start) * 1000.0)
+
     yield TurnStartEvent(max_steps=effective_max_steps)
 
     if token.is_cancelled:
@@ -326,6 +332,7 @@ async def agent_loop(
             total_tokens=0,
             total_cost_micros=0,
             cancelled=True,
+            latency_ms=_elapsed_ms(),
         )
         return
 
@@ -338,6 +345,7 @@ async def agent_loop(
                 total_tokens=total_tokens,
                 total_cost_micros=total_cost_micros,
                 cancelled=True,
+                latency_ms=_elapsed_ms(),
             )
             return
 
@@ -349,6 +357,7 @@ async def agent_loop(
                 total_tokens=total_tokens,
                 total_cost_micros=total_cost_micros,
                 cancelled=False,
+                latency_ms=_elapsed_ms(),
             )
             return
 
@@ -368,6 +377,7 @@ async def agent_loop(
                     total_tokens=total_tokens,
                     total_cost_micros=total_cost_micros,
                     cancelled=False,
+                    latency_ms=_elapsed_ms(),
                 )
                 return
 
@@ -413,6 +423,7 @@ async def agent_loop(
                 total_tokens=total_tokens,
                 total_cost_micros=total_cost_micros,
                 cancelled=False,
+                latency_ms=_elapsed_ms(),
             )
             return
         except asyncio.CancelledError:
@@ -427,6 +438,7 @@ async def agent_loop(
                     total_tokens=total_tokens,
                     total_cost_micros=total_cost_micros,
                     cancelled=True,
+                    latency_ms=_elapsed_ms(),
                 )
                 return
             raise
@@ -457,6 +469,7 @@ async def agent_loop(
                 total_tokens=total_tokens,
                 total_cost_micros=total_cost_micros,
                 cancelled=False,
+                latency_ms=_elapsed_ms(),
             )
             return
 
@@ -506,6 +519,7 @@ async def agent_loop(
                 total_tokens=total_tokens,
                 total_cost_micros=total_cost_micros,
                 cancelled=False,
+                latency_ms=_elapsed_ms(),
             )
             return
         except asyncio.CancelledError:
@@ -522,6 +536,7 @@ async def agent_loop(
                     total_tokens=total_tokens,
                     total_cost_micros=total_cost_micros,
                     cancelled=True,
+                    latency_ms=_elapsed_ms(),
                 )
                 return
             raise
@@ -540,6 +555,7 @@ async def agent_loop(
                 total_tokens=total_tokens,
                 total_cost_micros=total_cost_micros,
                 cancelled=True,
+                latency_ms=_elapsed_ms(),
             )
             return
 
@@ -565,6 +581,7 @@ async def agent_loop(
                 total_tokens=total_tokens,
                 total_cost_micros=total_cost_micros,
                 cancelled=False,
+                latency_ms=_elapsed_ms(),
             )
             return
 
@@ -595,6 +612,7 @@ async def agent_loop(
         total_tokens=total_tokens,
         total_cost_micros=total_cost_micros,
         cancelled=token.is_cancelled,
+        latency_ms=_elapsed_ms(),
     )
 
 
@@ -624,6 +642,7 @@ class SubAgentRunner:
         max_steps: int = 4,
         timeout_s: float = 30.0,
         max_concurrent: int = 2,
+        max_per_session: int | None = None,
         temperature: float = 0.3,
         max_tokens: int = 1024,
         system_prompt: str = DEFAULT_SUBAGENT_SYSTEM_PROMPT,
@@ -642,6 +661,11 @@ class SubAgentRunner:
         self._max_steps = max(1, int(max_steps))
         self._timeout_s = max(0.1, float(timeout_s))
         self._max_concurrent = max(1, int(max_concurrent))
+        self._max_per_session: int | None = (
+            int(max_per_session)
+            if max_per_session is not None and int(max_per_session) > 0
+            else None
+        )
         self._temperature = float(temperature)
         self._max_tokens = max(64, int(max_tokens))
         self._system_prompt = system_prompt
@@ -660,7 +684,14 @@ class SubAgentRunner:
         """Spawn a non-blocking depth=1 research task and immediately return its `SubAgentHandle`."""
         if self._closed:
             raise RuntimeError("SubAgentRunner is closed")
-        if len(self._active) >= self._max_concurrent:
+        if (
+            self._max_per_session is not None
+            and self.active_count(session_key=request.session_key) >= self._max_per_session
+        ):
+            raise RuntimeError(
+                f"subagent per-session concurrency limit ({self._max_per_session}) reached for {request.session_key}"
+            )
+        if self.active_count() >= self._max_concurrent:
             raise RuntimeError("subagent concurrency limit reached")
         if request.task_id in self._active:
             raise ValueError(f"Duplicate active subagent task_id: {request.task_id}")
@@ -854,6 +885,16 @@ class SubAgentRunner:
                 self._cancelling_tasks.add(handle.task)
                 handle.task.add_done_callback(self._cancelling_tasks.discard)
         return cancelled_count
+
+    def active_count(self, *, session_key: str | None = None) -> int:
+        """Return count of currently active background sub-agent tasks (globally or for `session_key`)."""
+        return sum(
+            1
+            for h in self._active.values()
+            if not h.task.done()
+            and not h.cancel_token.is_cancelled
+            and (session_key is None or h.request.session_key == session_key)
+        )
 
     def active_tasks(self, *, session_key: str | None = None) -> list[SubAgentRequest]:
         """Return currently active `SubAgentRequest` specifications."""
@@ -1093,8 +1134,16 @@ def _resolve_handler_arity(fn: Callable[..., Any]) -> int:
     return positional
 
 
+def _normalize_priority(priority: TurnPriority) -> TurnPriority:
+    if priority == "soft":
+        return "soft"
+    if priority == "hard":
+        return "hard"
+    raise ValueError(f"Unsupported TurnPriority: {priority!r}")
+
+
 class SessionActor:
-    """Per-session resident async actor orchestrating debounce, steer, followUp, and SubAgent wakeups."""
+    """Per-session resident async actor orchestrating debounce, QoS preemption, steer, followUp, and SubAgent wakeups."""
 
     def __init__(
         self,
@@ -1108,6 +1157,8 @@ class SessionActor:
         max_debounce_batch: int = 8,
         ambient_maxlen: int = 25,
         coalesce_fn: Callable[[list[Any]], Any] | None = None,
+        can_preempt_active_fn: Callable[[], bool] | None = None,
+        on_item_dropped: Callable[[Any], None] | None = None,
     ) -> None:
         self.session_key = session_key
         self.ambient = AmbientBuffer(maxlen=ambient_maxlen)
@@ -1125,18 +1176,24 @@ class SessionActor:
         self._max_debounce_wait_s = max(0.05, float(max_debounce_wait_s))
         self._max_debounce_batch = max(1, int(max_debounce_batch))
         self._coalesce_fn = coalesce_fn if coalesce_fn is not None else default_coalesce_items
+        self._can_preempt_active_fn = can_preempt_active_fn
+        self._on_item_dropped = on_item_dropped
 
         self._state: ActorState = "IDLE"
         self._closed = False
         self._active_cancel_token: CancelToken | None = None
         self._active_turn_user_id: int | None = None
+        self._active_turn_priority: TurnPriority = "hard"
+        self._preempted_count: int = 0
 
         self._steering_queue: deque[str] = deque()
         self._followup_queue: deque[Any] = deque()
+        self._followup_priorities: deque[TurnPriority] = deque()
         self._subagent_queue: deque[SubAgentResult] = deque()
 
         self._debounce_items: list[Any] = []
         self._debounce_user_id: int | None = None
+        self._debounce_priority: TurnPriority = "hard"
         self._debounce_first_ts: float = 0.0
         self._debounce_last_ts: float = 0.0
 
@@ -1163,12 +1220,62 @@ class SessionActor:
         return self._active_cancel_token
 
     @property
+    def active_turn_priority(self) -> TurnPriority:
+        return self._active_turn_priority
+
+    @property
+    def preempted_count(self) -> int:
+        return self._preempted_count
+
+    @property
     def debounce_s(self) -> float:
         return self._debounce_s
 
     @debounce_s.setter
     def debounce_s(self, value: float) -> None:
         self._debounce_s = max(0.0, float(value))
+
+    def _notify_dropped(self, item: Any) -> None:
+        if self._on_item_dropped is None:
+            return
+        try:
+            self._on_item_dropped(item)
+        except Exception:
+            logger.exception(
+                "Unhandled error in SessionActor(%s) on_item_dropped callback",
+                self.session_key,
+            )
+
+    def _has_hard_followup(self) -> bool:
+        if not self._followup_queue:
+            return False
+        if len(self._followup_priorities) < len(self._followup_queue):
+            return True
+        return any(p == "hard" for p in self._followup_priorities)
+
+    def _purge_soft_followups(self) -> int:
+        if not self._followup_queue:
+            self._followup_priorities.clear()
+            return 0
+        items_list = list(self._followup_queue)
+        prios_list = list(self._followup_priorities)
+        kept_items: list[Any] = []
+        kept_prios: list[TurnPriority] = []
+        dropped_items: list[Any] = []
+        for idx, q_item in enumerate(items_list):
+            q_prio: TurnPriority = prios_list[idx] if idx < len(prios_list) else "hard"
+            if q_prio == "soft":
+                dropped_items.append(q_item)
+            else:
+                kept_items.append(q_item)
+                kept_prios.append("hard")
+        self._followup_queue.clear()
+        self._followup_priorities.clear()
+        self._followup_queue.extend(kept_items)
+        self._followup_priorities.extend(kept_prios)
+        for d_item in dropped_items:
+            self._notify_dropped(d_item)
+        return len(dropped_items)
 
     def start(self) -> None:
         """Ensure the resident actor loop task is running on the active event loop."""
@@ -1206,11 +1313,24 @@ class SessionActor:
         self._steering_queue.clear()
         return drained
 
-    def enqueue_followup(self, item: Any) -> None:
+    def enqueue_followup(self, item: Any, *, priority: TurnPriority = "hard") -> None:
         """Queue a follow-up turn item to run seamlessly right after the active turn finishes."""
         if self._closed:
+            self._notify_dropped(item)
             return
+        prio = _normalize_priority(priority)
+        if prio == "soft":
+            if (
+                self._state == "RUNNING"
+                or (self._debounce_items and self._debounce_priority == "hard")
+                or self._has_hard_followup()
+            ):
+                self._notify_dropped(item)
+                return
+        else:
+            self._purge_soft_followups()
         self._followup_queue.append(item)
+        self._followup_priorities.append(prio)
         self._idle_event.clear()
         self.start()
         self._wakeup_event.set()
@@ -1233,34 +1353,110 @@ class SessionActor:
         steer_if_same_user: bool = False,
         steer_text: str | None = None,
         cancel_active: bool = False,
+        priority: TurnPriority = "hard",
     ) -> SubmitRoute:
-        """Route an inbound triggered item across IDLE debounce coalescing vs RUNNING steer/followUp."""
+        """Route an inbound triggered item across IDLE debounce coalescing vs RUNNING QoS preemption/steer/followUp."""
         if self._closed:
             raise RuntimeError(f"SessionActor({self.session_key}) is closed")
 
+        prio = _normalize_priority(priority)
         speaker_id = _extract_item_user_id(item, user_id)
 
         if self._state == "RUNNING":
+            if prio == "soft":
+                self._notify_dropped(item)
+                return "dropped_soft"
+
+            can_preempt = (
+                self._can_preempt_active_fn is None
+                or bool(self._can_preempt_active_fn())
+            )
+            already_preempting = (
+                self._active_cancel_token is not None
+                and self._active_cancel_token.is_cancelled
+                and self._active_cancel_token.reason == "preempted_by_hard_trigger"
+            )
+            if self._active_turn_priority == "soft" and (can_preempt or already_preempting):
+                if (
+                    self._active_cancel_token is not None
+                    and not self._active_cancel_token.is_cancelled
+                ):
+                    self._active_cancel_token.cancel(reason="preempted_by_hard_trigger")
+                    self._preempted_count += 1
+                self._steering_queue.clear()
+                self._purge_soft_followups()
+                self.enqueue_followup(item, priority="hard")
+                return "followup"
+
             if cancel_active or (
                 steer_if_same_user
                 and speaker_id is not None
                 and speaker_id == self._active_turn_user_id
             ):
+                self._purge_soft_followups()
                 line = steer_text if steer_text is not None else _extract_item_text(item)
                 self.steer(line, cancel_active=cancel_active)
                 return "steered"
-            self.enqueue_followup(item)
+
+            self._purge_soft_followups()
+            self.enqueue_followup(item, priority="hard")
             return "followup"
+
+        if prio == "soft" and self._has_hard_followup():
+            self._notify_dropped(item)
+            return "dropped_soft"
 
         now = time.monotonic()
         if not self._debounce_items:
+            if prio == "hard":
+                self._purge_soft_followups()
             self._debounce_items.append(item)
             self._debounce_user_id = speaker_id
+            self._debounce_priority = prio
             self._debounce_first_ts = now
             self._debounce_last_ts = now
             self._idle_event.clear()
             self.start()
             self._wakeup_event.set()
+            return "debouncing"
+
+        same_known_speaker = (
+            speaker_id is not None and speaker_id == self._debounce_user_id
+        )
+
+        if self._debounce_priority == "soft" and prio == "hard":
+            if same_known_speaker:
+                self._purge_soft_followups()
+                self._debounce_items.append(item)
+                self._debounce_priority = "hard"
+                self._debounce_last_ts = now
+                self._debounce_bump_event.set()
+                self._wakeup_event.set()
+                return "debouncing"
+
+            evicted = list(self._debounce_items)
+            self._debounce_items.clear()
+            self._debounce_items.append(item)
+            self._debounce_user_id = speaker_id
+            self._debounce_priority = "hard"
+            self._debounce_first_ts = now
+            self._debounce_last_ts = now
+            self._idle_event.clear()
+            self.start()
+            self._debounce_bump_event.set()
+            self._wakeup_event.set()
+            for ev_item in evicted:
+                self._notify_dropped(ev_item)
+            self._purge_soft_followups()
+            return "debouncing"
+
+        if self._debounce_priority == "hard" and prio == "soft":
+            if not same_known_speaker:
+                self._notify_dropped(item)
+                return "dropped_soft"
+            self._debounce_items.append(item)
+            self._debounce_last_ts = now
+            self._debounce_bump_event.set()
             return "debouncing"
 
         if speaker_id == self._debounce_user_id:
@@ -1269,7 +1465,7 @@ class SessionActor:
             self._debounce_bump_event.set()
             return "debouncing"
 
-        self.enqueue_followup(item)
+        self.enqueue_followup(item, priority=prio)
         return "followup"
 
     def stop(self, reason: str = "stopped") -> tuple[bool, int]:
@@ -1282,12 +1478,22 @@ class SessionActor:
             self._active_cancel_token.cancel(reason=reason)
             cancelled_main = True
 
+        dropped_debounce = list(self._debounce_items)
         self._debounce_items.clear()
         self._debounce_user_id = None
+        self._debounce_priority = "hard"
         self._debounce_bump_event.set()
+
+        dropped_followup = list(self._followup_queue)
         self._followup_queue.clear()
+        self._followup_priorities.clear()
         self._steering_queue.clear()
         self._subagent_queue.clear()
+
+        for d_item in dropped_debounce:
+            self._notify_dropped(d_item)
+        for d_item in dropped_followup:
+            self._notify_dropped(d_item)
 
         cancelled_subagents = 0
         if self._subagent_runner is not None:
@@ -1319,7 +1525,7 @@ class SessionActor:
             await asyncio.gather(self._worker_task, return_exceptions=True)
         self._worker_task = None
 
-    async def _wait_and_pop_debounced_turn(self) -> Any | None:
+    async def _wait_and_pop_debounced_turn(self) -> tuple[Any, TurnPriority] | None:
         if self._debounce_s > 0.0:
             while self._debounce_items and not self._closed:
                 if len(self._debounce_items) >= self._max_debounce_batch:
@@ -1337,14 +1543,24 @@ class SessionActor:
                     pass
 
         if not self._debounce_items or self._closed:
-            self._debounce_items.clear()
-            self._debounce_user_id = None
+            if self._debounce_items:
+                leftover = list(self._debounce_items)
+                self._debounce_items.clear()
+                self._debounce_user_id = None
+                self._debounce_priority = "hard"
+                for item in leftover:
+                    self._notify_dropped(item)
+            else:
+                self._debounce_user_id = None
+                self._debounce_priority = "hard"
             return None
 
         batch = list(self._debounce_items)
+        turn_priority = self._debounce_priority
         self._debounce_items.clear()
         self._debounce_user_id = None
-        return self._coalesce_fn(batch)
+        self._debounce_priority = "hard"
+        return self._coalesce_fn(batch), turn_priority
 
     async def _invoke_handler(
         self,
@@ -1360,8 +1576,14 @@ class SessionActor:
         else:
             await fn(payload, token, self.drain_steering)
 
-    async def _execute_main_turn(self, item: Any) -> None:
+    async def _execute_main_turn(
+        self,
+        item: Any,
+        *,
+        turn_priority: TurnPriority = "hard",
+    ) -> None:
         self._state = "RUNNING"
+        self._active_turn_priority = turn_priority
         self._active_turn_user_id = _extract_item_user_id(item)
         self._steering_queue.clear()
         token = CancelToken()
@@ -1377,6 +1599,7 @@ class SessionActor:
         finally:
             self._active_cancel_token = None
             self._active_turn_user_id = None
+            self._active_turn_priority = "hard"
             if not self._closed:
                 self._state = "IDLE"
 
@@ -1384,6 +1607,7 @@ class SessionActor:
         if res.cancelled or self._closed:
             return
         self._state = "RUNNING"
+        self._active_turn_priority = "hard"
         self._active_turn_user_id = res.origin_user_id or None
         self._steering_queue.clear()
         token = CancelToken()
@@ -1407,6 +1631,7 @@ class SessionActor:
         finally:
             self._active_cancel_token = None
             self._active_turn_user_id = None
+            self._active_turn_priority = "hard"
             if not self._closed:
                 self._state = "IDLE"
 
@@ -1419,14 +1644,20 @@ class SessionActor:
                     continue
 
                 if self._debounce_items:
-                    turn_item = await self._wait_and_pop_debounced_turn()
-                    if turn_item is not None:
-                        await self._execute_main_turn(turn_item)
+                    popped = await self._wait_and_pop_debounced_turn()
+                    if popped is not None:
+                        turn_item, turn_prio = popped
+                        await self._execute_main_turn(turn_item, turn_priority=turn_prio)
                     continue
 
                 if self._followup_queue:
                     next_item = self._followup_queue.popleft()
-                    await self._execute_main_turn(next_item)
+                    next_prio: TurnPriority = (
+                        self._followup_priorities.popleft()
+                        if self._followup_priorities
+                        else "hard"
+                    )
+                    await self._execute_main_turn(next_item, turn_priority=next_prio)
                     continue
 
                 self._state = "IDLE"
@@ -1462,6 +1693,7 @@ __all__ = [
     "ToolExecutionEvent",
     "ToolHandler",
     "TurnEndEvent",
+    "TurnPriority",
     "TurnStartEvent",
     "agent_loop",
     "default_coalesce_items",
