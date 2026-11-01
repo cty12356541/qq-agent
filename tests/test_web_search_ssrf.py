@@ -332,7 +332,7 @@ def test_web_search_bing_cn_parsing_and_ddg_uddg_fallback_with_dedup_and_anti_in
 
     def _handler(request: httpx.Request) -> httpx.Response:
         called_hosts.append(request.url.host or "")
-        if request.url.host == "cn.bing.com":
+        if request.url.host == "www.bing.com":
             assert "zh-CN" in request.headers.get("Accept-Language", "")
             return httpx.Response(200, text=bing_single_hit_html)
         if request.url.host == "html.duckduckgo.com":
@@ -349,7 +349,7 @@ def test_web_search_bing_cn_parsing_and_ddg_uddg_fallback_with_dedup_and_anti_in
         xml_out = await fast_tool.execute({"query": "Python 3.12 泛型", "max_results": 5})
 
         # Bing returned only 1 valid hit (< 2) -> automatically supplemented via DuckDuckGo HTML
-        assert called_hosts == ["cn.bing.com", "html.duckduckgo.com"]
+        assert called_hosts == ["www.bing.com", "html.duckduckgo.com"]
         assert xml_out.startswith('<untrusted_web_results query="Python 3.12 泛型">')
         assert xml_out.endswith("</untrusted_web_results>")
 
@@ -382,7 +382,7 @@ def test_web_search_bing_timeout_falls_back_cleanly_to_ddg_html() -> None:
     """
 
     def _handler(request: httpx.Request) -> httpx.Response:
-        if request.url.host == "cn.bing.com":
+        if request.url.host == "www.bing.com":
             raise httpx.ReadTimeout("Simulated Bing CN timeout", request=request)
         if request.url.host == "html.duckduckgo.com":
             return httpx.Response(200, text=ddg_only_html)

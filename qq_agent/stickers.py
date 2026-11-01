@@ -170,11 +170,29 @@ class StickerRegistry:
             logger.warning("Failed to hot-reload stickers (%s); keeping cached registry", exc)
         return list(self._entries.values())
 
-    def render_prompt_guide(self) -> str:
+    @staticmethod
+    def _compact_label(entry: StickerEntry) -> str:
+        raw = entry.label.strip()
+        if not raw or raw == entry.id:
+            return entry.series
+        head = re.split(r"[（(《]", raw, maxsplit=1)[0].strip()
+        if head.endswith("动图") and len(head) > 2:
+            head = head[:-2]
+        short = head or raw
+        return short[:6]
+
+    def render_prompt_guide(self, *, compact: bool = False) -> str:
         """Build system-prompt instructions listing available 奶龙/奶蛙 sticker IDs."""
         entries = self.available_entries()
         if not entries:
             return ""
+
+        if compact:
+            items = " ".join(f"{e.id}({self._compact_label(e)})" for e in entries)
+            return (
+                f"【表情包】{items}\n"
+                "适度通过 send_message 的 sticker_id（或 [[sticker:ID]]）配1张图；禁用（狗头）等括号文字表情。"
+            )
 
         lines = [
             "【表情包（奶龙/奶蛙系列）使用指南】",

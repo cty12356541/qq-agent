@@ -133,10 +133,12 @@ async def fetch_vision_images(
     *,
     max_images: int = 2,
     max_bytes: int = 5 * 1024 * 1024,
+    max_side: int = 512,
     timeout_s: float = 8.0,
     transport: httpx.AsyncBaseTransport | None = None,
+    client: httpx.AsyncClient | None = None,
 ) -> tuple[tuple[str, str], ...]:
-    """Download up to `max_images` inbound HTTP(S) image URLs and encode them for multimodal vision."""
+    """Download up to `max_images` inbound HTTP(S) image URLs concurrently and encode them for multimodal vision."""
     candidates = [
         u.strip()
         for u in urls
@@ -145,23 +147,35 @@ async def fetch_vision_images(
     if not candidates:
         return ()
 
-    results: list[tuple[str, str]] = []
-    async with httpx.AsyncClient(
-        timeout=httpx.Timeout(timeout_s),
-        follow_redirects=True,
-        transport=transport,
-    ) as client:
-        for url in candidates:
-            try:
-                resp = await client.get(url)
-                if resp.status_code != 200 or not resp.content or len(resp.content) > max_bytes:
-                    continue
-                normalized = normalize_image_bytes_for_vision(resp.content)
-                if normalized is not None:
-                    results.append(normalized)
-            except Exception as exc:
-                logger.debug("Skipping inbound image vision fetch (%s)", type(exc).__name__)
-    return tuple(results)
+    eff_max_side = max(1, int(max_side))
+
+    async def _fetch_one(http_client: httpx.AsyncClient, url: str) -> tuple[str, str] | None:
+        try:
+            resp = await http_client.get(url, follow_redirects=True, timeout=timeout_s)
+            if resp.status_code != 200 or not resp.content or len(resp.content) > max_bytes:
+                return None
+            return await asyncio.to_thread(
+                normalize_image_bytes_for_vision,
+                resp.content,
+                max_side=eff_max_side,
+            )
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            logger.debug("Skipping inbound image vision fetch (%s)", type(exc).__name__)
+            return None
+
+    if client is not None:
+        fetched = await asyncio.gather(*(_fetch_one(client, url) for url in candidates))
+    else:
+        async with httpx.AsyncClient(
+            timeout=httpx.Timeout(timeout_s),
+            follow_redirects=True,
+            transport=transport,
+        ) as owned_client:
+            fetched = await asyncio.gather(*(_fetch_one(owned_client, url) for url in candidates))
+
+    return tuple(item for item in fetched if item is not None)
 
 
 def _sanitize_error_message(raw: str, api_key: str) -> str:

@@ -143,6 +143,7 @@ def build_send_message_tool(
     stickers: StickerRegistry | None = None,
     typing_delay_s: float = DEFAULT_TYPING_DELAY_S,
     sleep_fn: Callable[[float], Awaitable[Any]] = asyncio.sleep,
+    compact_schema: bool = False,
 ) -> ToolBinding:
     """Build the `send_message` terminal chat tool streaming 1~3 anthropomorphic bubbles into `MessageBus`."""
     route_chat_type, route_target_id, base_corr_id = _resolve_target_route(
@@ -153,19 +154,28 @@ def build_send_message_tool(
     )
     delay_s = max(0.0, float(typing_delay_s))
 
-    initial_allowed = _build_allowed_sticker_map(allowed_sticker_ids, stickers)
-    if initial_allowed:
-        sample_ids = ", ".join(list(initial_allowed.values())[:16])
-        sticker_desc = f"可选，附加在最后一条气泡后的表情包 ID（仅限合法 ID：{sample_ids}）。"
+    if compact_schema:
+        tool_desc = "向当前会话发送1~3条短句气泡回复。"
+        bubbles_desc = "1~3条短句气泡。"
+        sticker_desc = "可选，末条附带的合法表情包ID。"
+        reply_desc = "可选，首条引用的目标消息ID。"
     else:
-        sticker_desc = "可选，附加在最后一条气泡后的表情包 ID（非法 ID 会被自动忽略）。"
+        initial_allowed = _build_allowed_sticker_map(allowed_sticker_ids, stickers)
+        if initial_allowed:
+            sample_ids = ", ".join(list(initial_allowed.values())[:16])
+            sticker_desc = f"可选，附加在最后一条气泡后的表情包 ID（仅限合法 ID：{sample_ids}）。"
+        else:
+            sticker_desc = "可选，附加在最后一条气泡后的表情包 ID（非法 ID 会被自动忽略）。"
+        tool_desc = (
+            "向当前 QQ 会话发送回复消息。请模仿真实群友将发言自然拆成 1~3 条短句气泡（bubbles），"
+            "需要引用某条消息时填 reply_to_message_id（仅首条生效），需要配表情包时填 sticker_id（仅末条生效）。"
+        )
+        bubbles_desc = "1~3 条短句聊天气泡文本列表。"
+        reply_desc = "可选，引用回复的目标消息 ID。"
 
     definition = ToolDef(
         name="send_message",
-        description=(
-            "向当前 QQ 会话发送回复消息。请模仿真实群友将发言自然拆成 1~3 条短句气泡（bubbles），"
-            "需要引用某条消息时填 reply_to_message_id（仅首条生效），需要配表情包时填 sticker_id（仅末条生效）。"
-        ),
+        description=tool_desc,
         input_schema={
             "type": "object",
             "properties": {
@@ -174,7 +184,7 @@ def build_send_message_tool(
                     "items": {"type": "string"},
                     "minItems": 1,
                     "maxItems": MAX_BUBBLES_PER_SEND,
-                    "description": "1~3 条短句聊天气泡文本列表。",
+                    "description": bubbles_desc,
                 },
                 "sticker_id": {
                     "type": "string",
@@ -182,7 +192,7 @@ def build_send_message_tool(
                 },
                 "reply_to_message_id": {
                     "type": "integer",
-                    "description": "可选，引用回复的目标消息 ID。",
+                    "description": reply_desc,
                 },
             },
             "required": ["bubbles"],

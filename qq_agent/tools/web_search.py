@@ -300,9 +300,10 @@ async def validate_public_http_url(
         else:
             raw_resolved = await asyncio.to_thread(
                 socket.getaddrinfo,
-                raw_host,
+                host_normalized,
                 port,
-                type=socket.SOCK_STREAM,
+                0,
+                socket.SOCK_STREAM,
             )
     except SsrfBlockedError:
         raise
@@ -451,8 +452,33 @@ class WebPageFetcher:
         self._jina_min_chars = max(0, int(jina_min_chars))
         self._resolver = resolver
         self._client = client
+        self._owned_client: httpx.AsyncClient | None = None
         self._transport = transport
         self._user_agent = user_agent
+
+    def _get_or_create_client(self) -> httpx.AsyncClient:
+        if self._client is not None:
+            return self._client
+        if self._owned_client is None or self._owned_client.is_closed:
+            self._owned_client = httpx.AsyncClient(
+                timeout=httpx.Timeout(self._timeout_s),
+                follow_redirects=False,
+                transport=self._transport,
+            )
+        return self._owned_client
+
+    async def __aenter__(self) -> WebPageFetcher:
+        return self
+
+    async def __aexit__(self, exc_type: Any, exc: Any, tb: Any) -> None:
+        await self.aclose()
+
+    async def aclose(self) -> None:
+        """Close the lazily-allocated internal HTTP connection pool (never closes an injected client)."""
+        owned = self._owned_client
+        self._owned_client = None
+        if owned is not None and not owned.is_closed:
+            await owned.aclose()
 
     async def _stream_validated_url(
         self,
@@ -589,15 +615,8 @@ class WebPageFetcher:
     ) -> str:
         """Validate, stream, clean, optionally Jina-render, truncate, and wrap `url` in `<untrusted_webpage>`."""
         effective_max_chars = min(HARD_FETCH_MAX_CHARS, max(1, int(max_chars)))
-        if self._client is not None:
-            return await self._fetch_with_client(self._client, url, max_chars=effective_max_chars)
-
-        async with httpx.AsyncClient(
-            timeout=httpx.Timeout(self._timeout_s),
-            follow_redirects=False,
-            transport=self._transport,
-        ) as owned_client:
-            return await self._fetch_with_client(owned_client, url, max_chars=effective_max_chars)
+        http_client = self._get_or_create_client()
+        return await self._fetch_with_client(http_client, url, max_chars=effective_max_chars)
 
 
 def _unwrap_bing_href(raw_href: str) -> str:
@@ -991,9 +1010,9 @@ def format_untrusted_web_results(
 
 
 class WebSearchClient:
-    """3-tier web search client: optional API (Tavily-compatible) -> Bing CN -> DuckDuckGo HTML fallback & dedup."""
+    """3-tier web search client: optional API (Tavily-compatible) -> concurrent Bing CN / DuckDuckGo HTML race & dedup."""
 
-    BING_CN_URL = "https://cn.bing.com/search"
+    BING_CN_URL = "https://www.bing.com/search"
     DDG_HTML_URL = "https://html.duckduckgo.com/html/"
     DEFAULT_TAVILY_URL = "https://api.tavily.com/search"
 
@@ -1015,8 +1034,33 @@ class WebSearchClient:
             else None
         )
         self._client = client
+        self._owned_client: httpx.AsyncClient | None = None
         self._transport = transport
         self._user_agent = user_agent
+
+    def _get_or_create_client(self) -> httpx.AsyncClient:
+        if self._client is not None:
+            return self._client
+        if self._owned_client is None or self._owned_client.is_closed:
+            self._owned_client = httpx.AsyncClient(
+                timeout=httpx.Timeout(self._timeout_s),
+                follow_redirects=True,
+                transport=self._transport,
+            )
+        return self._owned_client
+
+    async def __aenter__(self) -> WebSearchClient:
+        return self
+
+    async def __aexit__(self, exc_type: Any, exc: Any, tb: Any) -> None:
+        await self.aclose()
+
+    async def aclose(self) -> None:
+        """Close the lazily-allocated internal HTTP connection pool (never closes an injected client)."""
+        owned = self._owned_client
+        self._owned_client = None
+        if owned is not None and not owned.is_closed:
+            await owned.aclose()
 
     def _resolve_api_endpoint(self) -> str:
         if not self._search_api_base_url:
@@ -1090,7 +1134,7 @@ class WebSearchClient:
     ) -> list[SearchResultItem]:
         resp = await http_client.get(
             self.BING_CN_URL,
-            params={"q": query, "ensearch": "0"},
+            params={"q": query, "ensearch": "0", "mkt": "zh-CN"},
             headers=self._browser_headers(),
         )
         resp.raise_for_status()
@@ -1144,24 +1188,58 @@ class WebSearchClient:
             except Exception as exc:
                 logger.warning("Configured search API failed (%s); falling back to Bing CN", type(exc).__name__)
 
-        # Tier 2: Primary keyless engine - Bing CN
-        try:
-            bing_hits = await self._search_via_bing_cn(http_client, query)
-            _append_dedup(bing_hits)
-        except asyncio.CancelledError:
-            raise
-        except Exception as exc:
-            logger.debug("Bing CN search failed/timed out (%s); falling back to DuckDuckGo HTML", exc)
-
-        # Tier 3: Backup keyless engine - DuckDuckGo HTML when Bing CN returned < 2 hits (or failed)
-        if len(merged) < 2 and len(merged) < limit:
+        def _collect_task_hits(
+            task: asyncio.Task[list[SearchResultItem]],
+            engine_name: str,
+        ) -> list[SearchResultItem]:
             try:
-                ddg_hits = await self._search_via_ddg_html(http_client, query)
-                _append_dedup(ddg_hits)
+                return task.result()
             except asyncio.CancelledError:
-                raise
+                return []
             except Exception as exc:
-                logger.debug("DuckDuckGo HTML backup search failed (%s)", exc)
+                logger.debug("%s search failed/timed out (%s)", engine_name, exc)
+                return []
+
+        # Tier 2 & 3: Concurrent Bing CN + DuckDuckGo HTML race (bing_task scheduled first)
+        bing_task = asyncio.create_task(self._search_via_bing_cn(http_client, query))
+        ddg_task = asyncio.create_task(self._search_via_ddg_html(http_client, query))
+        ordered_tasks = (
+            (bing_task, "Bing CN"),
+            (ddg_task, "DuckDuckGo HTML"),
+        )
+        try:
+            done, pending = await asyncio.wait(
+                (bing_task, ddg_task),
+                return_when=asyncio.FIRST_COMPLETED,
+            )
+            if bing_task in done:
+                _append_dedup(_collect_task_hits(bing_task, "Bing CN"))
+                if len(merged) >= min_sufficient:
+                    if ddg_task in done:
+                        _collect_task_hits(ddg_task, "DuckDuckGo HTML")
+                    else:
+                        ddg_task.cancel()
+                        await asyncio.gather(ddg_task, return_exceptions=True)
+                    return merged[:limit]
+            if ddg_task in done:
+                _append_dedup(_collect_task_hits(ddg_task, "DuckDuckGo HTML"))
+                if len(merged) >= min_sufficient:
+                    if not bing_task.done():
+                        bing_task.cancel()
+                        await asyncio.gather(bing_task, return_exceptions=True)
+                    return merged[:limit]
+
+            if pending:
+                await asyncio.wait(pending)
+                for task, engine_name in ordered_tasks:
+                    if task in pending:
+                        _append_dedup(_collect_task_hits(task, engine_name))
+        except BaseException:
+            for task, _ in ordered_tasks:
+                if not task.done():
+                    task.cancel()
+            await asyncio.gather(bing_task, ddg_task, return_exceptions=True)
+            raise
 
         return merged[:limit]
 
@@ -1177,15 +1255,8 @@ class WebSearchClient:
             raise ToolArgumentError("'query' must be a non-empty search string")
         limit = min(10, max(1, int(max_results)))
 
-        if self._client is not None:
-            return await self._search_with_client(self._client, cleaned_query, limit)
-
-        async with httpx.AsyncClient(
-            timeout=httpx.Timeout(self._timeout_s),
-            follow_redirects=True,
-            transport=self._transport,
-        ) as owned_client:
-            return await self._search_with_client(owned_client, cleaned_query, limit)
+        http_client = self._get_or_create_client()
+        return await self._search_with_client(http_client, cleaned_query, limit)
 
     async def search(
         self,
