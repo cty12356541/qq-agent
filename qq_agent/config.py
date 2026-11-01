@@ -1,0 +1,229 @@
+"""Environment and `.env` configuration loader for qq-agent (zero third-party dependencies)."""
+
+from __future__ import annotations
+
+from collections.abc import Mapping
+from dataclasses import dataclass, field
+import os
+from pathlib import Path
+from typing import Literal
+
+BusMode = Literal["llmos", "direct-ws"]
+
+
+def _default_llmos_root() -> Path:
+    preferred = Path(r"D:\llmos")
+    if preferred.exists():
+        return preferred
+    return Path(r"D:\AI\llmos")
+
+
+def _strip_value(raw_val: str) -> str:
+    val = raw_val.strip()
+    if len(val) >= 2 and (
+        (val[0] == '"' and val[-1] == '"') or (val[0] == "'" and val[-1] == "'")
+    ):
+        return val[1:-1]
+    if val.startswith("#"):
+        return ""
+    for marker in (" #", "\t#"):
+        idx = val.find(marker)
+        if idx != -1:
+            val = val[:idx].rstrip()
+    return val
+
+
+def load_dotenv_file(
+    path: Path | str,
+    *,
+    environ: Mapping[str, str] | None = None,
+) -> dict[str, str]:
+    """Parse a `.env` file into a dictionary without overwriting explicit process env vars."""
+    env_path = Path(path)
+    if not env_path.is_file():
+        return {}
+
+    active_env: Mapping[str, str] = os.environ if environ is None else environ
+    parsed: dict[str, str] = {}
+
+    for raw_line in env_path.read_text(encoding="utf-8-sig").splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#"):
+            continue
+        if line.startswith("export ") and "=" in line[7:]:
+            line = line[7:].strip()
+        if "=" not in line:
+            continue
+        key_raw, val_raw = line.split("=", 1)
+        key = key_raw.strip()
+        if not key:
+            continue
+        value = _strip_value(val_raw)
+        if key in active_env:
+            parsed[key] = active_env[key]
+        else:
+            parsed[key] = value
+
+    return parsed
+
+
+def _parse_optional_int(raw: str | None, field_name: str) -> int | None:
+    if raw is None:
+        return None
+    stripped = raw.strip()
+    if not stripped:
+        return None
+    try:
+        return int(stripped)
+    except ValueError as exc:
+        raise ValueError(f"Invalid integer for {field_name}: {raw!r}") from exc
+
+
+def _parse_int_with_default(raw: str | None, default: int, field_name: str) -> int:
+    parsed = _parse_optional_int(raw, field_name)
+    return default if parsed is None else parsed
+
+
+def _parse_int_set(raw: str | None, field_name: str) -> set[int]:
+    if raw is None:
+        return set()
+    items: set[int] = set()
+    for part in raw.split(","):
+        token = part.strip()
+        if not token:
+            continue
+        try:
+            items.add(int(token))
+        except ValueError as exc:
+            raise ValueError(f"Invalid integer item {token!r} in {field_name}") from exc
+    return items
+
+
+@dataclass(slots=True)
+class AgentConfig:
+    """Normalized runtime configuration aligned 1-to-1 with `.env.example`."""
+
+    bot_qq: int | None = None
+    admin_user_ids: set[int] = field(default_factory=set)
+    allowed_group_ids: set[int] | None = None
+
+    napcat_ws_url: str = "ws://127.0.0.1:3001"
+    napcat_access_token: str | None = field(default=None, repr=False)
+
+    llm_api_key: str = field(default="", repr=False)
+    llm_base_url: str = "https://api.deepseek.com/v1"
+    llm_model: str = "deepseek-chat"
+    llm_cheap_model: str | None = None
+
+    llmos_root: Path = field(default_factory=_default_llmos_root)
+    llmos_plain_endpoint: str | None = None
+
+    data_dir: Path = field(default_factory=lambda: Path("data"))
+    persona_path: Path = field(default_factory=lambda: Path("config/persona.default.toml"))
+
+    daily_max_calls: int = 200
+    daily_max_tokens: int = 200_000
+    daily_soft_cost_micros_usd: int = 1_000_000
+    daily_hard_cost_micros_usd: int = 2_000_000
+
+    mode: BusMode = "llmos"
+
+    @property
+    def sessions_db_path(self) -> Path:
+        return self.data_dir / "sessions.sqlite3"
+
+    @property
+    def guardrails_db_path(self) -> Path:
+        return self.data_dir / "guardrails.sqlite3"
+
+    @property
+    def llmos_daemon_root(self) -> Path:
+        return self.data_dir / "llmos_daemon"
+
+    @classmethod
+    def from_env(
+        cls,
+        env_file: Path | str | None = ".env",
+        *,
+        direct_ws: bool = False,
+        environ: Mapping[str, str] | None = None,
+    ) -> AgentConfig:
+        """Load AgentConfig from process environment + optional `.env` file fallback."""
+        active_env: Mapping[str, str] = os.environ if environ is None else environ
+        dotenv_vars = (
+            load_dotenv_file(env_file, environ=active_env)
+            if env_file is not None
+            else {}
+        )
+
+        def get_raw(key: str) -> str | None:
+            if key in active_env:
+                return active_env[key]
+            return dotenv_vars.get(key)
+
+        def get_nonempty(key: str, default: str) -> str:
+            raw = get_raw(key)
+            if raw is None:
+                return default
+            stripped = raw.strip()
+            return stripped if stripped else default
+
+        def get_optional_str(key: str) -> str | None:
+            raw = get_raw(key)
+            if raw is None:
+                return None
+            stripped = raw.strip()
+            return stripped if stripped else None
+
+        bot_qq = _parse_optional_int(get_raw("QQ_BOT_ID"), "QQ_BOT_ID")
+        admin_ids = _parse_int_set(get_raw("QQ_ADMIN_IDS"), "QQ_ADMIN_IDS")
+        allowed_groups_set = _parse_int_set(get_raw("QQ_ALLOWED_GROUPS"), "QQ_ALLOWED_GROUPS")
+        allowed_groups: set[int] | None = allowed_groups_set if allowed_groups_set else None
+
+        llmos_root_raw = get_optional_str("LLMOS_ROOT")
+        llmos_root = Path(llmos_root_raw) if llmos_root_raw is not None else _default_llmos_root()
+
+        api_key_raw = get_raw("LLM_API_KEY")
+        llm_api_key = api_key_raw.strip() if api_key_raw is not None else ""
+
+        mode: BusMode = "direct-ws" if direct_ws else "llmos"
+
+        return cls(
+            bot_qq=bot_qq,
+            admin_user_ids=admin_ids,
+            allowed_group_ids=allowed_groups,
+            napcat_ws_url=get_nonempty("NAPCAT_WS_URL", "ws://127.0.0.1:3001"),
+            napcat_access_token=get_optional_str("NAPCAT_ACCESS_TOKEN"),
+            llm_api_key=llm_api_key,
+            llm_base_url=get_nonempty("LLM_BASE_URL", "https://api.deepseek.com/v1"),
+            llm_model=get_nonempty("LLM_MODEL", "deepseek-chat"),
+            llm_cheap_model=get_optional_str("LLM_CHEAP_MODEL"),
+            llmos_root=llmos_root,
+            llmos_plain_endpoint=get_optional_str("LLMOS_PLAIN_ENDPOINT"),
+            data_dir=Path(get_nonempty("QQ_DATA_DIR", "data")),
+            persona_path=Path(get_nonempty("QQ_PERSONA_PATH", "config/persona.default.toml")),
+            daily_max_calls=_parse_int_with_default(
+                get_raw("QQ_DAILY_MAX_CALLS"), 200, "QQ_DAILY_MAX_CALLS"
+            ),
+            daily_max_tokens=_parse_int_with_default(
+                get_raw("QQ_DAILY_MAX_TOKENS"), 200_000, "QQ_DAILY_MAX_TOKENS"
+            ),
+            daily_soft_cost_micros_usd=_parse_int_with_default(
+                get_raw("QQ_DAILY_SOFT_COST_MICROS_USD"),
+                1_000_000,
+                "QQ_DAILY_SOFT_COST_MICROS_USD",
+            ),
+            daily_hard_cost_micros_usd=_parse_int_with_default(
+                get_raw("QQ_DAILY_HARD_COST_MICROS_USD"),
+                2_000_000,
+                "QQ_DAILY_HARD_COST_MICROS_USD",
+            ),
+            mode=mode,
+        )
+
+
+__all__ = [
+    "AgentConfig",
+    "BusMode",
+    "load_dotenv_file",
+]
