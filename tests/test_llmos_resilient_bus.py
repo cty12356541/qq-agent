@@ -822,7 +822,7 @@ def test_adaptive_poller_idle_backoff_and_active_reset_and_adapter_wiring():
     # NapCatWsAdapter fast unit-test poll_interval_s < 0.05 scaling & bot_name
     mem_bus = DirectMemoryBus()
     fast_adapter = NapCatWsAdapter("ws://127.0.0.1:3001", mem_bus, poll_interval_s=0.01)
-    assert fast_adapter.bot_name == "UD"
+    assert fast_adapter.bot_name == "阿橘"
     assert fast_adapter.outbound_poller.min_interval_s == pytest.approx(0.01)
     assert fast_adapter.outbound_poller.max_interval_s == pytest.approx(0.04)
 

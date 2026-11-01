@@ -1,7 +1,12 @@
 [project]
 name = "qq-agent"
 version = "0.1.0"
-description = "QQ AI 机器人 — 跑在 llmos 上的自用小圈子智能体（M0 探针阶段）"
+description = "基于 llmos 持久化通道与全异步 Pi-Agent 快慢双脑架构的小圈子 QQ 群友智能体"
+readme = "README.md"
+license = { text = "Apache-2.0" }
+authors = [
+    { name = "cty12356541" },
+]
 requires-python = ">=3.12"
 dependencies = [
     "httpx>=0.27",
@@ -9,6 +14,12 @@ dependencies = [
     "protobuf>=7.36.2",
     "websockets>=13",
 ]
+
+[project.urls]
+Homepage = "https://github.com/cty12356541/qq-agent"
+Repository = "https://github.com/cty12356541/qq-agent"
+Issues = "https://github.com/cty12356541/qq-agent/issues"
+Runtime = "https://github.com/cty12356541/llmos"
 
 [dependency-groups]
 dev = [
@@ -19,6 +30,7 @@ dev = [
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 
+# 国内镜像源加速；海外或 GitHub Actions CI 环境可按需移除此段以使用官方 PyPI
 [[tool.uv.index]]
 url = "https://pypi.tuna.tsinghua.edu.cn/simple"
 default = true

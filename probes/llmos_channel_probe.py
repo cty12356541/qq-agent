@@ -9,7 +9,7 @@
   5) 停机并清理临时持久化目录，退出码 0。
 
 用法：
-    D:\\AI\\qq-agent\\.venv\\Scripts\\python.exe probes\\llmos_channel_probe.py
+    uv run python probes/llmos_channel_probe.py
 """
 
 from __future__ import annotations
@@ -26,14 +26,14 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 
 
 def resolve_llmos_root() -> Path:
-    """解析 LLMOS_ROOT：环境变量优先；未设置时探测 D:\\llmos，否则回退 D:\\AI\\llmos。"""
+    """解析 LLMOS_ROOT：环境变量优先；未设置时自动探测本地或同级 ../llmos 目录。"""
     env_val = os.environ.get("LLMOS_ROOT", "").strip()
     if env_val:
         return Path(env_val)
     preferred = Path(r"D:\llmos")
     if (preferred / "sdk" / "python" / "nlos_sdk" / "channel.py").exists():
         return preferred
-    return Path(r"D:\AI\llmos")
+    return REPO_ROOT.parent / "llmos"
 
 
 LLMOS_ROOT = resolve_llmos_root()

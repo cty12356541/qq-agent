@@ -15,7 +15,7 @@ G0 判据输入：**Python 可以编程使用 llmos SDK 做真实 IPC 往返**�
 ### 1.1 `tests/conformance/ipc/client.py`（简报指定项）—— **PASS**
 
 ```bash
-cd /d/AI/llmos
+cd <LLMOS_ROOT>
 uv run --no-project --index-url https://pypi.tuna.tsinghua.edu.cn/simple --with protobuf \
   python tests/conformance/ipc/client.py
 # 无输出（断言型脚本，静默即全绿）
@@ -35,7 +35,7 @@ source: Os { code: 5, kind: PermissionDenied, message: "拒绝访问。" } }'
 
 **根因（实测定位，非猜测）**：该脚本 `endpoint()` 用 `time.time_ns() & 0xFFFFFFF`（28 位掩码）+ label 首字符（"bootstrap"/"business" 均为 'b'）构造唯一名。本机 `time.time_ns()` 连续调用 **99990/100000 返回同值**（时钟更新粒度粗于两次函数调用间隔，实测脚本验证），连续两次 `endpoint()` 生成**完全相同**的 pipe 名 → 服务端对目录/业务两个 listener bind 同名 pipe，第二个 bind 带 `first_pipe_instance`（`crates/nlos-ipc/src/windows.rs:177`）→ `ERROR_ACCESS_DENIED`（code 5，Windows 对已存在同名 pipe 首实例标志的文档化行为）。`client.py` 不快速连续生成两个并存 pipe 名，故不受影响。
 
-**验证性对照**：把官方脚本复制到仓库外，仅改两处（ROOT 钉到 `D:\AI\llmos`；endpoint 用完整 time_ns + 计数器 + 完整 label），其余逐字节不变：
+**验证性对照**：把官方脚本复制到仓库外，仅改两处（ROOT 钉到 `<LLMOS_ROOT>`；endpoint 用完整 time_ns + 计数器 + 完整 label），其余逐字节不变：
 
 ```bash
 uv run --no-project --index-url https://pypi.tuna.tsinghua.edu.cn/simple --with protobuf \

@@ -18,7 +18,7 @@ def _default_llmos_root() -> Path:
     preferred = Path(r"D:\llmos")
     if preferred.exists():
         return preferred
-    return Path(r"D:\AI\llmos")
+    return Path(__file__).resolve().parents[2] / "llmos"
 
 
 def _strip_value(raw_val: str) -> str:

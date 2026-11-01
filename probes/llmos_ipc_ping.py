@@ -6,7 +6,7 @@
      -> exchange(side-effecting) -> validate_response_context 校验回执
 
 前置：
-  - D:\\AI\\llmos 仓库已构建（cargo run 增量启动，脚本自动起 server，无需另开终端）
+  - 同级 ../llmos（或环境变量 LLMOS_ROOT 指定的仓库）已构建（脚本自动起 server，无需另开终端）
   - 依赖 protobuf（已入 qq-agent dev 组）：uv run python probes/llmos_ipc_ping.py
 
 本机坑（m0-llmos-notes.md §3 + 实测补充）：
@@ -26,7 +26,8 @@ import tempfile
 import time
 from pathlib import Path
 
-LLMOS_ROOT = Path(os.environ.get("LLMOS_ROOT", r"D:\AI\llmos"))
+REPO_ROOT = Path(__file__).resolve().parents[1]
+LLMOS_ROOT = Path(os.environ.get("LLMOS_ROOT") or (REPO_ROOT.parent / "llmos"))
 sys.path.insert(0, str(LLMOS_ROOT / "sdk" / "python"))
 sys.path.insert(0, str(LLMOS_ROOT / "gen" / "python"))
 

@@ -4,7 +4,7 @@
 >
 > - **评审日期**：2026-11-01
 > - **判据基准**：`docs/superpowers/plans/2026-10-28-m0-probe.md` Task 8 预置判据 + `docs/2026-10-28-qq-agent-计划书.md` §5 M0
-> - **验证环境**：Windows 11 Pro 10.0.28000 · Python 3.12.10 · `D:\llmos` `48964eb5`（只读引用，含 W73 dogfood 闭环与 W80 演练）
+> - **验证环境**：Windows 11 Pro 10.0.28000 · Python 3.12.10 · `<LLMOS_ROOT>` `48964eb5`（只读引用，含 W73 dogfood 闭环与 W80 演练）
 
 ---
 
@@ -52,16 +52,16 @@ uv run python probes/llmos_ipc_ping.py
 
 ### 2.2 ChannelControl SABI v1.0 跨进程闭环（`docs/evidence/m0-channel-budget.md` —— **PASS**）
 
-- 本仓 `probes/llmos_channel_probe.py` 自举启动 `D:\llmos\target\debug\system-control-daemon.exe`，经 `nlos_sdk.ChannelClient` 创建 `inbound` / `outbound` 两条 64 KiB 持久化队列，完整校验幂等重放、`InboundMessage`（群聊 `@bot`）与 `OutboundReply` 的序列化入队、非破坏接收、100% 字段还原、`register_queue_consumption`、`ack`、`compact` 与 `inspect_queue` 清空断言：
+- 本仓 `probes/llmos_channel_probe.py` 自举启动 `<LLMOS_ROOT>/target/debug/system-control-daemon.exe`，经 `nlos_sdk.ChannelClient` 创建 `inbound` / `outbound` 两条 64 KiB 持久化队列，完整校验幂等重放、`InboundMessage`（群聊 `@bot`）与 `OutboundReply` 的序列化入队、非破坏接收、100% 字段还原、`register_queue_consumption`、`ack`、`compact` 与 `inspect_queue` 清空断言：
 
 ```powershell
-D:\AI\qq-agent\.venv\Scripts\python.exe probes\llmos_channel_probe.py
+uv run python probes/llmos_channel_probe.py
 ```
 
 ```text
-[probe] llmos root: D:\llmos
+[probe] llmos root: <LLMOS_ROOT>
 [probe] nlos_sdk v0.1.0 import OK (service=channel, schema=nlos.sabi.ChannelControl)
-[probe] starting system-control-daemon via prebuilt (D:\llmos\target\debug\system-control-daemon.exe)
+[probe] starting system-control-daemon via prebuilt (<LLMOS_ROOT>/target/debug/system-control-daemon.exe)
 [probe] channel 'inbound' created & idempotent replay OK: id=a7db9e77d61cab57... gen=1 cap=65536B
 [probe] channel 'outbound' created & idempotent replay OK: id=fc33693a42c5c98c... gen=1 cap=65536B
 [probe] inbound receive & decode 100% match: event_id=evt-m0-probe-001 session=group:70001 mentioned_bot=True

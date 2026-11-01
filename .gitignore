@@ -1,9 +1,28 @@
 __pycache__/
+*.py[cod]
 .venv/
 .pytest_cache/
+.ruff_cache/
+.mypy_cache/
+dist/
+build/
+*.egg-info/
+
+# 运行期数据、会话/记忆数据库与私有人设层
 data/
+*.sqlite3
+*.sqlite3-wal
+*.sqlite3-shm
+config/persona.local.toml
+config/personas/
+
+# 环境变量与密钥（仅保留示例模板）
 .env
 .env.*
+!.env.example
+
+# 本地辅助工具、探针日志与编排工作目录
 /tools/
 docs/evidence/*.log
 .agentdash/
+.superpowers/

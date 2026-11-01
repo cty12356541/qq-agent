@@ -1,7 +1,7 @@
 # llmos（NLOS）M0 现状盘点笔记
 
 > Task 4 产出。后续 T5/T6 探针的 API 依据：本文所有类名/函数签名/常量均摘自源码原文并带 `文件路径:行号`，未凭记忆改写。
-> 所有路径相对 `D:\AI\llmos`（HEAD `d4a9d34`，2026-10-28，`feat(w71): complete D-OMNIBAR-MULTIMODAL, D-TRUSTED-UI, and C-NET-SYNC-MIGRATE`；origin = github.com/cty12356541/llmos）。
+> 所有路径相对 `<LLMOS_ROOT>`（HEAD `d4a9d34`，2026-10-28，`feat(w71): complete D-OMNIBAR-MULTIMODAL, D-TRUSTED-UI, and C-NET-SYNC-MIGRATE`；origin = github.com/cty12356541/llmos）。
 
 ## 0. 构建与测试基线（本机 Windows 11，dev profile）
 

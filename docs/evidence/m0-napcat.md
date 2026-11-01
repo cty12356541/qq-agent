@@ -8,7 +8,7 @@
 
 | 项 | 值 |
 |---|---|
-| 部署形态 | Docker Desktop (`29.9.2` / WSL `2.7.14.0`, 数据卷位于 `D:\Docker\WslData`) + `deploy/napcat/docker-compose.yml` (`mlikiowa/napcat-docker:latest`) |
+| 部署形态 | Docker Desktop (`29.9.2` / WSL `2.7.14.0`, WSL2 后端命名卷隔离存储) + `deploy/napcat/docker-compose.yml` (`mlikiowa/napcat-docker:latest`) |
 | NapCat 版本 | `NapCat.Core 4.18.42` (`protocol_version: v11`) |
 | QQ 登录方式 | 机器人专用小号通过本机回环 WebUI (`127.0.0.1:6099`) 登录成功，并固化 `autoLoginAccount` 与持久化卷 (`qq_agent_napcat_qq_data` / `qq_agent_napcat_config`)；与宿主机 Windows 主号 QQ 完全隔离（契合 `E-004`） |
 | OneBot 11 正向 WS 端口 | `127.0.0.1:3001`（`netstat -ano \| findstr :3001` 确认仅 `127.0.0.1:3001 LISTENING`，未暴露 `0.0.0.0`） |
@@ -37,6 +37,6 @@
 
 ## 遇到的问题与处置
 
-1. **宿主机 `C:` 盘剩余空间仅 ~`7.4 GB`**：安装 Docker Desktop 时显式使用 `--installation-dir=D:\Docker\Program` 与 `--wsl-default-data-root=D:\Docker\WslData`，并将 WSL2 安装切换为纯 `x64` 离线 MSI 多并发分片下载，避免占用 `C:` 盘空间。
+1. **Docker Desktop 与 WSL2 数据目录自定义隔离**：安装 Docker Desktop 时支持显式指定 `--installation-dir=<自定义程序目录>` 与 `--wsl-default-data-root=<自定义数据卷目录>`，将镜像与 WSL2 虚拟盘置于独立数据分区，避免占用系统盘空间。
 2. **无界面容器内机器人加好友/入群审批**：由于容器内无桌面 GUI 点击「同意」，已在 `NapCatWsAdapter` 中增加**仅针对白名单管理员 (`QQ_ADMIN_IDS`) 与白名单群 (`QQ_ALLOWED_GROUPS`)** 的好友申请/入群邀请自动审批，陌生人请求一律不自动放行。
 3. **本机 3-Key GLM 聚合路由协议适配**：扩展 `OpenAICompatProvider` 原生识别 `/anthropic` (`/v1/messages`) 端点并自动过滤 `thinking` 推理块，仅将 `text` 回复块投递到 QQ 会话。

@@ -416,7 +416,7 @@ def test_ws_outbound_receipt_cache_and_inbound_zero_rpc_reply_hit() -> None:
                 quoted_bot_msg = await _poll_one_inbound(bus)
                 assert quoted_bot_msg.reply_to_id == 6001
                 assert quoted_bot_msg.reply_to_user_id == 99999
-                assert quoted_bot_msg.reply_to_sender_name == "UD"
+                assert quoted_bot_msg.reply_to_sender_name == "阿橘"
                 assert quoted_bot_msg.reply_to_text == "今晚八点准时开黑！"
                 assert rpc_calls == []
 

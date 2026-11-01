@@ -220,7 +220,7 @@ def test_e2e_inbound_image_vision_and_outbound_sticker_ws_pipeline(tmp_path: Pat
         bus = DirectMemoryBus()
         await bus.start()
         persona = PersonaManager(DEFAULT_PERSONA_PATH)
-        assert persona.current().name == "UD"
+        assert persona.current().name == "阿橘"
         stickers = StickerRegistry(sticker_dir, manifest_path=DEFAULT_STICKERS_MANIFEST)
         sessions = SessionStore(tmp_path / "sessions.sqlite3")
         guardrails = GuardrailManager(tmp_path / "guardrails.sqlite3", user_cooldown_s=0.0)

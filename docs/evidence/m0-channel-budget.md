@@ -4,7 +4,7 @@
 >
 > **初探历史背景保留说明**：下文 §1–§3 完整保留 2026-10-28 基于 `llmos` `d4a9d34` 的 M0 初探记录与四项缺口分析（彼时 channel 尚无跨进程服务面，标记为 `BLOCKED`），以便对照审计上游 dogfood 反哺前后的演进闭环。
 > 环境：Windows 11 Pro 10.0.28000；Python 3.12.10（`qq-agent` `.venv`）；`llmos` 全程只读引用（`git status --porcelain` 为空）。
-> API 依据：`docs/evidence/m0-llmos-notes.md`（初探）+ `D:\llmos\sdk\python\nlos_sdk\channel.py`（W73/W80 复验）。
+> API 依据：`docs/evidence/m0-llmos-notes.md`（初探）+ `<LLMOS_ROOT>/sdk/python/nlos_sdk/channel.py`（W73/W80 复验）。
 
 ## 总判定
 
@@ -22,7 +22,7 @@
 ### 1.1 `queue_delivery` suite —— 11/11 PASS
 
 ```bash
-cd /d/AI/llmos
+cd <LLMOS_ROOT>
 cargo test -p nlos-channel --test queue_delivery -- --nocapture
 ```
 
@@ -199,7 +199,7 @@ test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; fini
 
 ## 复核记录
 
-- llmos 只读自查：任务前后 `git -C D:\AI\llmos status --porcelain` 均为空；HEAD `d4a9d34` 未动。
+- llmos 只读自查：任务前后 `git -C <LLMOS_ROOT> status --porcelain` 均为空；HEAD `d4a9d34` 未动。
 - 笔记行号抽查（ChannelAuthority 方法 11 处、daemon.rs 端点推导/能力策略、service_directory.proto、buf.gen.yaml）全部与 `m0-llmos-notes.md` 一致或已在文中更新为实测行号。
 
 ---
@@ -208,7 +208,7 @@ test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; fini
 
 ### 4.1 上游缺口闭环核对（对照 §2 四缺口）
 
-§2 登记的四项缺口（归档于 `docs/evidence/dogfood-issues.md` `L-002`）已由 `llmos` W73 波次采用 canonical 路径 A 全量落地（复验工作树 `D:\llmos` HEAD `48964eb5`）：
+§2 登记的四项缺口（归档于 `docs/evidence/dogfood-issues.md` `L-002`）已由 `llmos` W73 波次采用 canonical 路径 A 全量落地（复验工作树 `<LLMOS_ROOT>` HEAD `48964eb5`）：
 
 1. **Schema 冻结**：新增 `schema/nlos/sabi/v1/channel_control.proto`（`nlos.sabi.ChannelControl` `v1.0`，单帧上限 `64 KiB`）及生成物 `gen/python/nlos/sabi/v1/channel_control_pb2.py`（提交 `5e409b0f`）。
 2. **宿主挂载与目录注册**：`crates/nlos-system-control/src/channel_control.rs` 实现全量 9 方法（`create_channel`、`rotate_channel`、`enqueue`、`receive`、`ack`、`compact`、`inspect_channel`、`inspect_queue`、`register_queue_consumption`），挂载至 `system-control-daemon` 的 plain/auth 端点，并以 `service = "channel"` 注册入内置 `ServiceDirectory`。
@@ -217,21 +217,21 @@ test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; fini
 
 ### 4.2 本仓跨进程探针 `probes/llmos_channel_probe.py` 实测 —— **PASS**
 
-为验证 `qq-agent` 自身业务域类型在 `llmos` 持久化队列上的端到端表现，本仓编写并运行 `probes/llmos_channel_probe.py`：自举拉起 `D:\llmos\target\debug\system-control-daemon.exe`，通过 `nlos_sdk.ChannelClient` 创建 `inbound` 与 `outbound` 两条持久化 Channel（`capacity_bytes=65536`），分别将 `qq_agent.types.InboundMessage`（群聊 `@bot` 消息）与 `OutboundReply`（群聊回包）序列化入队、跨进程接收反序列化（100% 字段等价断言），并走完 `register_queue_consumption` → `ack` → `compact` → `inspect_queue` 队列清空闭环。
+为验证 `qq-agent` 自身业务域类型在 `llmos` 持久化队列上的端到端表现，本仓编写并运行 `probes/llmos_channel_probe.py`：自举拉起 `<LLMOS_ROOT>/target/debug/system-control-daemon.exe`，通过 `nlos_sdk.ChannelClient` 创建 `inbound` 与 `outbound` 两条持久化 Channel（`capacity_bytes=65536`），分别将 `qq_agent.types.InboundMessage`（群聊 `@bot` 消息）与 `OutboundReply`（群聊回包）序列化入队、跨进程接收反序列化（100% 字段等价断言），并走完 `register_queue_consumption` → `ack` → `compact` → `inspect_queue` 队列清空闭环。
 
 **实测命令**：
 
 ```powershell
-D:\AI\qq-agent\.venv\Scripts\python.exe probes\llmos_channel_probe.py
+uv run python probes/llmos_channel_probe.py
 ```
 
 **真实运行输出摘录**：
 
 ```text
-[probe] llmos root: D:\llmos
+[probe] llmos root: <LLMOS_ROOT>
 [probe] nlos_sdk v0.1.0 import OK (service=channel, schema=nlos.sabi.ChannelControl)
-[probe] starting system-control-daemon via prebuilt (D:\llmos\target\debug\system-control-daemon.exe)
-[probe] daemon READY service=system_control root=C:\Users\ADMINI~1\AppData\Local\Temp\qq-agent-cc-probe-17024-1793531856587014900 auth_socket=\\.\pipe\qq-agent-cc-4280-1793531856587014900-1-auth plain_socket=\\.\pipe\qq-agent-cc-4280-1793531856587014900-2-plain principal=none operator_root_receipt=none
+[probe] starting system-control-daemon via prebuilt (<LLMOS_ROOT>/target/debug/system-control-daemon.exe)
+[probe] daemon READY service=system_control root=<TEMP>\qq-agent-cc-probe-17024-1793531856587014900 auth_socket=\\.\pipe\qq-agent-cc-4280-1793531856587014900-1-auth plain_socket=\\.\pipe\qq-agent-cc-4280-1793531856587014900-2-plain principal=none operator_root_receipt=none
 
 [probe] === Phase 1: 创建 inbound / outbound 持久化 Channel 与幂等重放 ===
 [probe] channel 'inbound' created & idempotent replay OK: id=a7db9e77d61cab57... gen=1 cap=65536B
