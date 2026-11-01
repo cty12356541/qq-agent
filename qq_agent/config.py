@@ -155,6 +155,9 @@ class AgentConfig:
     llm_cheap_model: str | None = None
     llm_enable_thinking: bool = False
     enable_vision: bool = True
+    vision_max_side: int = 512
+    compact_prompt: bool = True
+    fact_cache_ttl_s: float = 1800.0
 
     llmos_root: Path = field(default_factory=_default_llmos_root)
     llmos_plain_endpoint: str | None = None
@@ -166,8 +169,8 @@ class AgentConfig:
     personas_dir: Path | None = None
     stickers_manifest_path: Path = field(default_factory=lambda: Path("config/stickers.toml"))
 
-    private_debounce_s: float = 1.8
-    group_debounce_s: float = 1.2
+    private_debounce_s: float = 0.30
+    group_debounce_s: float = 0.40
     group_followup_window_s: float = 60.0
     group_proactive_prob: float = 0.22
     group_topic_prob: float = 0.65
@@ -176,14 +179,15 @@ class AgentConfig:
 
     agent_max_steps: int = 3
     agent_turn_timeout_s: float = 35.0
-    bubble_typing_delay_s: float = 0.45
+    bubble_typing_delay_s: float = 0.15
 
     subagent_enabled: bool = True
     subagent_model: str | None = None
-    subagent_enable_thinking: bool = True
+    subagent_enable_thinking: bool = False
     subagent_max_steps: int = 4
     subagent_timeout_s: float = 30.0
-    subagent_max_concurrent: int = 2
+    subagent_max_concurrent: int = 6
+    subagent_max_per_session: int = 2
 
     web_search_enabled: bool = True
     web_search_timeout_s: float = 8.0
@@ -309,6 +313,21 @@ class AgentConfig:
             enable_vision=_parse_bool_with_default(
                 get_raw("QQ_ENABLE_VISION"), True, "QQ_ENABLE_VISION"
             ),
+            vision_max_side=max(
+                128,
+                _parse_int_with_default(
+                    get_raw("QQ_VISION_MAX_SIDE"), 512, "QQ_VISION_MAX_SIDE"
+                ),
+            ),
+            compact_prompt=_parse_bool_with_default(
+                get_raw("QQ_COMPACT_PROMPT"), True, "QQ_COMPACT_PROMPT"
+            ),
+            fact_cache_ttl_s=max(
+                0.0,
+                _parse_float_with_default(
+                    get_raw("QQ_FACT_CACHE_TTL_S"), 1800.0, "QQ_FACT_CACHE_TTL_S"
+                ),
+            ),
             llmos_root=llmos_root,
             llmos_plain_endpoint=get_optional_str("LLMOS_PLAIN_ENDPOINT"),
             runtime_role=runtime_role,
@@ -320,10 +339,10 @@ class AgentConfig:
                 get_nonempty("QQ_STICKERS_MANIFEST", "config/stickers.toml")
             ),
             private_debounce_s=_parse_float_with_default(
-                get_raw("QQ_PRIVATE_DEBOUNCE_S"), 1.8, "QQ_PRIVATE_DEBOUNCE_S"
+                get_raw("QQ_PRIVATE_DEBOUNCE_S"), 0.30, "QQ_PRIVATE_DEBOUNCE_S"
             ),
             group_debounce_s=_parse_float_with_default(
-                get_raw("QQ_GROUP_DEBOUNCE_S"), 1.2, "QQ_GROUP_DEBOUNCE_S"
+                get_raw("QQ_GROUP_DEBOUNCE_S"), 0.40, "QQ_GROUP_DEBOUNCE_S"
             ),
             group_followup_window_s=_parse_float_with_default(
                 get_raw("QQ_GROUP_FOLLOWUP_WINDOW_S"), 60.0, "QQ_GROUP_FOLLOWUP_WINDOW_S"
@@ -347,14 +366,14 @@ class AgentConfig:
                 get_raw("QQ_AGENT_TURN_TIMEOUT_S"), 35.0, "QQ_AGENT_TURN_TIMEOUT_S"
             ),
             bubble_typing_delay_s=_parse_float_with_default(
-                get_raw("QQ_BUBBLE_TYPING_DELAY_S"), 0.45, "QQ_BUBBLE_TYPING_DELAY_S"
+                get_raw("QQ_BUBBLE_TYPING_DELAY_S"), 0.15, "QQ_BUBBLE_TYPING_DELAY_S"
             ),
             subagent_enabled=_parse_bool_with_default(
                 get_raw("SUBAGENT_ENABLED"), True, "SUBAGENT_ENABLED"
             ),
             subagent_model=get_optional_str("SUBAGENT_MODEL"),
             subagent_enable_thinking=_parse_bool_with_default(
-                get_raw("SUBAGENT_ENABLE_THINKING"), True, "SUBAGENT_ENABLE_THINKING"
+                get_raw("SUBAGENT_ENABLE_THINKING"), False, "SUBAGENT_ENABLE_THINKING"
             ),
             subagent_max_steps=_parse_int_with_default(
                 get_raw("SUBAGENT_MAX_STEPS"), 4, "SUBAGENT_MAX_STEPS"
@@ -362,8 +381,17 @@ class AgentConfig:
             subagent_timeout_s=_parse_float_with_default(
                 get_raw("SUBAGENT_TIMEOUT_S"), 30.0, "SUBAGENT_TIMEOUT_S"
             ),
-            subagent_max_concurrent=_parse_int_with_default(
-                get_raw("SUBAGENT_MAX_CONCURRENT"), 2, "SUBAGENT_MAX_CONCURRENT"
+            subagent_max_concurrent=max(
+                1,
+                _parse_int_with_default(
+                    get_raw("SUBAGENT_MAX_CONCURRENT"), 6, "SUBAGENT_MAX_CONCURRENT"
+                ),
+            ),
+            subagent_max_per_session=max(
+                1,
+                _parse_int_with_default(
+                    get_raw("SUBAGENT_MAX_PER_SESSION"), 2, "SUBAGENT_MAX_PER_SESSION"
+                ),
             ),
             web_search_enabled=_parse_bool_with_default(
                 get_raw("WEB_SEARCH_ENABLED"), True, "WEB_SEARCH_ENABLED"
