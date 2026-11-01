@@ -1,13 +1,76 @@
-"""Shared domain types across qq-agent adapter, trigger, guardrails, memory, and LLM provider."""
+"""Shared domain types across qq-agent adapter, trigger, guardrails, memory, tools, and LLM provider."""
 
 from __future__ import annotations
 
 import json
-from dataclasses import asdict, dataclass
-from typing import Literal
+from dataclasses import asdict, dataclass, field
+from typing import Any, Literal
 
 ChatType = Literal["group", "private"]
-MessageRole = Literal["system", "user", "assistant"]
+MessageRole = Literal["system", "user", "assistant", "tool"]
+RuntimeRole = Literal["supervisor", "adapter", "brain", "all-in-one"]
+
+
+@dataclass(slots=True, frozen=True)
+class ToolDef:
+    """Normalized client-side tool definition exposed to Anthropic/OpenAI-compatible providers."""
+
+    name: str
+    description: str
+    input_schema: dict[str, Any]
+    is_chat_terminal: bool = False
+    requires_followup: bool = True
+
+
+@dataclass(slots=True, frozen=True)
+class ToolCall:
+    """Single model-emitted tool invocation."""
+
+    id: str
+    name: str
+    arguments: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass(slots=True, frozen=True)
+class ToolOutcome:
+    """Execution result of a single ToolCall fed back to the next agent_loop step."""
+
+    tool_call_id: str
+    name: str
+    content: str
+    is_error: bool = False
+
+
+@dataclass(slots=True, frozen=True)
+class SubAgentRequest:
+    """Depth=1 non-blocking background research sub-agent task specification."""
+
+    task_id: str
+    session_key: str
+    goal: str
+    context_hint: str = ""
+    origin_user_id: int = 0
+    origin_sender_name: str = ""
+    reply_to_message_id: int | None = None
+    inbound_seq: int | None = None
+
+
+@dataclass(slots=True, frozen=True)
+class SubAgentResult:
+    """Clean distilled brief returned from a depth=1 background sub-agent to SessionActor."""
+
+    task_id: str
+    session_key: str
+    goal: str
+    brief: str
+    is_error: bool = False
+    cancelled: bool = False
+    origin_user_id: int = 0
+    origin_sender_name: str = ""
+    reply_to_message_id: int | None = None
+    inbound_seq: int | None = None
+    steps_used: int = 0
+    total_tokens: int = 0
 
 
 @dataclass(slots=True, frozen=True)
@@ -116,17 +179,19 @@ class OutboundReply:
 
 @dataclass(slots=True, frozen=True)
 class ChatMessage:
-    """Single message turn inside an LLM conversation window (with optional base64 images)."""
+    """Single message turn inside an LLM conversation window (with optional images & tool traces)."""
 
     role: MessageRole
     content: str
     created_at: float = 0.0
     images: tuple[tuple[str, str], ...] = ()  # tuple of (media_type, base64_data)
+    tool_calls: tuple[ToolCall, ...] = ()
+    tool_results: tuple[ToolOutcome, ...] = ()
 
 
 @dataclass(slots=True, frozen=True)
 class ChatResult:
-    """Normalized LLM provider completion response with token & micro-USD accounting."""
+    """Normalized LLM provider completion response with token, micro-USD & tool-call accounting."""
 
     content: str
     model: str
@@ -135,6 +200,8 @@ class ChatResult:
     total_tokens: int = 0
     cost_micros_usd: int = 0
     latency_ms: float = 0.0
+    tool_calls: tuple[ToolCall, ...] = ()
+    stop_reason: str = "end_turn"
 
 
 @dataclass(slots=True, frozen=True)

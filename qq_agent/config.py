@@ -8,7 +8,10 @@ import os
 from pathlib import Path
 from typing import Literal
 
+from .types import RuntimeRole
+
 BusMode = Literal["llmos", "direct-ws"]
+_VALID_ROLES: frozenset[str] = frozenset({"supervisor", "adapter", "brain", "all-in-one"})
 
 
 def _default_llmos_root() -> Path:
@@ -124,6 +127,17 @@ def _parse_int_set(raw: str | None, field_name: str) -> set[int]:
     return items
 
 
+def _parse_runtime_role(raw: str | None, default: RuntimeRole = "supervisor") -> RuntimeRole:
+    if raw is None or not raw.strip():
+        return default
+    token = raw.strip().lower()
+    if token not in _VALID_ROLES:
+        raise ValueError(
+            f"Invalid QQ_RUNTIME_ROLE: {raw!r} (expected one of {sorted(_VALID_ROLES)})"
+        )
+    return token  # type: ignore[return-value]
+
+
 @dataclass(slots=True)
 class AgentConfig:
     """Normalized runtime configuration aligned 1-to-1 with `.env.example`."""
@@ -144,6 +158,7 @@ class AgentConfig:
 
     llmos_root: Path = field(default_factory=_default_llmos_root)
     llmos_plain_endpoint: str | None = None
+    runtime_role: RuntimeRole = "supervisor"
 
     data_dir: Path = field(default_factory=lambda: Path("data"))
     persona_path: Path = field(default_factory=lambda: Path("config/persona.default.toml"))
@@ -158,6 +173,22 @@ class AgentConfig:
     group_topic_prob: float = 0.65
     group_proactive_every_n: int = 6
     group_proactive_cooldown_s: float = 12.0
+
+    agent_max_steps: int = 3
+    agent_turn_timeout_s: float = 35.0
+    bubble_typing_delay_s: float = 0.45
+
+    subagent_enabled: bool = True
+    subagent_model: str | None = None
+    subagent_enable_thinking: bool = True
+    subagent_max_steps: int = 4
+    subagent_timeout_s: float = 30.0
+    subagent_max_concurrent: int = 2
+
+    web_search_enabled: bool = True
+    web_search_timeout_s: float = 8.0
+    search_api_key: str | None = field(default=None, repr=False)
+    search_api_base_url: str | None = None
 
     daily_max_calls: int = 200
     daily_max_tokens: int = 200_000
@@ -196,7 +227,15 @@ class AgentConfig:
 
     @property
     def llmos_daemon_root(self) -> Path:
-        return self.data_dir / "llmos_daemon"
+        return (self.data_dir / "llmos_daemon").resolve()
+
+    @property
+    def llmos_runtime_state_path(self) -> Path:
+        return (self.data_dir / "llmos_runtime.json").resolve()
+
+    @property
+    def effective_subagent_model(self) -> str:
+        return self.subagent_model if self.subagent_model else self.llm_model
 
     @classmethod
     def from_env(
@@ -251,6 +290,8 @@ class AgentConfig:
         llm_api_key = api_key_raw.strip() if api_key_raw is not None else ""
 
         mode: BusMode = "direct-ws" if direct_ws else "llmos"
+        default_role: RuntimeRole = "all-in-one" if direct_ws else "supervisor"
+        runtime_role = _parse_runtime_role(get_raw("QQ_RUNTIME_ROLE"), default=default_role)
 
         return cls(
             bot_qq=bot_qq,
@@ -270,6 +311,7 @@ class AgentConfig:
             ),
             llmos_root=llmos_root,
             llmos_plain_endpoint=get_optional_str("LLMOS_PLAIN_ENDPOINT"),
+            runtime_role=runtime_role,
             data_dir=Path(get_nonempty("QQ_DATA_DIR", "data")),
             persona_path=Path(get_nonempty("QQ_PERSONA_PATH", "config/persona.default.toml")),
             persona_local_path=persona_local_path,
@@ -298,6 +340,39 @@ class AgentConfig:
             group_proactive_cooldown_s=_parse_float_with_default(
                 get_raw("QQ_GROUP_PROACTIVE_COOLDOWN_S"), 12.0, "QQ_GROUP_PROACTIVE_COOLDOWN_S"
             ),
+            agent_max_steps=_parse_int_with_default(
+                get_raw("QQ_AGENT_MAX_STEPS"), 3, "QQ_AGENT_MAX_STEPS"
+            ),
+            agent_turn_timeout_s=_parse_float_with_default(
+                get_raw("QQ_AGENT_TURN_TIMEOUT_S"), 35.0, "QQ_AGENT_TURN_TIMEOUT_S"
+            ),
+            bubble_typing_delay_s=_parse_float_with_default(
+                get_raw("QQ_BUBBLE_TYPING_DELAY_S"), 0.45, "QQ_BUBBLE_TYPING_DELAY_S"
+            ),
+            subagent_enabled=_parse_bool_with_default(
+                get_raw("SUBAGENT_ENABLED"), True, "SUBAGENT_ENABLED"
+            ),
+            subagent_model=get_optional_str("SUBAGENT_MODEL"),
+            subagent_enable_thinking=_parse_bool_with_default(
+                get_raw("SUBAGENT_ENABLE_THINKING"), True, "SUBAGENT_ENABLE_THINKING"
+            ),
+            subagent_max_steps=_parse_int_with_default(
+                get_raw("SUBAGENT_MAX_STEPS"), 4, "SUBAGENT_MAX_STEPS"
+            ),
+            subagent_timeout_s=_parse_float_with_default(
+                get_raw("SUBAGENT_TIMEOUT_S"), 30.0, "SUBAGENT_TIMEOUT_S"
+            ),
+            subagent_max_concurrent=_parse_int_with_default(
+                get_raw("SUBAGENT_MAX_CONCURRENT"), 2, "SUBAGENT_MAX_CONCURRENT"
+            ),
+            web_search_enabled=_parse_bool_with_default(
+                get_raw("WEB_SEARCH_ENABLED"), True, "WEB_SEARCH_ENABLED"
+            ),
+            web_search_timeout_s=_parse_float_with_default(
+                get_raw("WEB_SEARCH_TIMEOUT_S"), 8.0, "WEB_SEARCH_TIMEOUT_S"
+            ),
+            search_api_key=get_optional_str("SEARCH_API_KEY"),
+            search_api_base_url=get_optional_str("SEARCH_API_BASE_URL"),
             daily_max_calls=_parse_int_with_default(
                 get_raw("QQ_DAILY_MAX_CALLS"), 200, "QQ_DAILY_MAX_CALLS"
             ),
@@ -321,5 +396,6 @@ class AgentConfig:
 __all__ = [
     "AgentConfig",
     "BusMode",
+    "RuntimeRole",
     "load_dotenv_file",
 ]

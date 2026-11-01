@@ -1,4 +1,15 @@
+from pathlib import Path
+
 from qq_agent.config import AgentConfig
+from qq_agent.llmos_sdk import (
+    INBOUND_CHANNEL_CREATE_KEY,
+    OUTBOUND_CHANNEL_CREATE_KEY,
+    derive_deterministic_id16,
+    fiber_id_for_session,
+    fiber_id_for_subagent,
+    load_nlos_sdk,
+    process_id_for_role,
+)
 from qq_agent.types import (
     ChatMessage,
     ChatResult,
@@ -6,6 +17,11 @@ from qq_agent.types import (
     GuardDecision,
     InboundMessage,
     OutboundReply,
+    SubAgentRequest,
+    SubAgentResult,
+    ToolCall,
+    ToolDef,
+    ToolOutcome,
     TriggerDecision,
 )
 
@@ -83,3 +99,71 @@ def test_value_objects_and_m2_config_defaults():
     assert cfg.group_proactive_every_n == 5
     assert str(cfg.memory_db_path).endswith("memory.sqlite3")
     assert str(cfg.effective_persona_local_path).endswith("persona.local.toml")
+
+
+def test_w4_tool_subagent_contracts_and_llmos_sdk_identities():
+    tdef = ToolDef(
+        name="send_message",
+        description="Send bubbles",
+        input_schema={"type": "object"},
+        is_chat_terminal=True,
+        requires_followup=False,
+    )
+    tcall = ToolCall(id="call_1", name="send_message", arguments={"bubbles": ["早）"]})
+    tout = ToolOutcome(tool_call_id="call_1", name="send_message", content="sent 1 bubble")
+    msg = ChatMessage(role="assistant", content="", tool_calls=(tcall,))
+    res = ChatResult(
+        content="",
+        model="glm-5.3-flash",
+        tool_calls=(tcall,),
+        stop_reason="tool_use",
+    )
+    sub_req = SubAgentRequest(
+        task_id="sub-1",
+        session_key="group:1001",
+        goal="查询莫斯科传奇插改动评价",
+        reply_to_message_id=8801,
+        inbound_seq=12,
+    )
+    sub_res = SubAgentResult(
+        task_id="sub-1",
+        session_key="group:1001",
+        goal=sub_req.goal,
+        brief="改动后射程与散布收益稳定。",
+        reply_to_message_id=8801,
+        inbound_seq=12,
+        steps_used=2,
+        total_tokens=900,
+    )
+    assert tdef.is_chat_terminal and not tdef.requires_followup
+    assert msg.tool_calls[0].name == "send_message"
+    assert tout.tool_call_id == "call_1"
+    assert res.stop_reason == "tool_use"
+    assert sub_res.brief.startswith("改动后")
+
+    assert len(INBOUND_CHANNEL_CREATE_KEY) == 16
+    assert len(OUTBOUND_CHANNEL_CREATE_KEY) == 16
+    assert INBOUND_CHANNEL_CREATE_KEY != OUTBOUND_CHANNEL_CREATE_KEY
+    assert INBOUND_CHANNEL_CREATE_KEY == derive_deterministic_id16("qq-agent/channel/inbound/v1")
+    assert process_id_for_role("adapter") != process_id_for_role("brain")
+    assert fiber_id_for_session("group:1") != fiber_id_for_session("group:2")
+    assert fiber_id_for_subagent("group:1", "sub-1") != fiber_id_for_session("group:1")
+
+    cfg = AgentConfig.from_env(
+        env_file=None,
+        environ={
+            "LLM_MODEL": "glm-5.3-flash",
+            "SUBAGENT_ENABLE_THINKING": "true",
+            "QQ_RUNTIME_ROLE": "brain",
+            "QQ_DATA_DIR": "data",
+        },
+    )
+    assert cfg.runtime_role == "brain"
+    assert cfg.effective_subagent_model == "glm-5.3-flash"
+    assert cfg.subagent_enable_thinking is True
+    assert cfg.llmos_daemon_root.is_absolute()
+
+    if Path(r"D:\llmos\sdk\python").is_dir():
+        bundle = load_nlos_sdk(r"D:\llmos")
+        assert bundle.version == "0.1.0"
+        assert bundle.ChannelClient is not None
