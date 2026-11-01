@@ -4,6 +4,6 @@ __pycache__/
 data/
 .env
 .env.*
-tools/
+/tools/
 docs/evidence/*.log
 .agentdash/

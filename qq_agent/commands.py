@@ -1,4 +1,4 @@
-"""Independent admin whitelist command router bypassing LLM context (§4.5, §4.6, M2 persona & memory commands)."""
+"""Independent admin whitelist command router bypassing LLM context (§4.5, §4.6, M2/W4 admin commands)."""
 
 from __future__ import annotations
 
@@ -11,6 +11,8 @@ from qq_agent.types import CommandResult, InboundMessage
 _BUILTIN_COMMANDS: frozenset[str] = frozenset(
     {
         "ping",
+        "status",
+        "stop",
         "reset",
         "quota",
         "reload",
@@ -29,6 +31,8 @@ _SINGLE_CQ_AT_QQ_RE = re.compile(r"^\[CQ:at,qq=(\d+)[^\]]*\]$")
 _HELP_TEXT = (
     "管理命令列表（仅管理员可用）：\n"
     "/ping - 检查机器人在线状态\n"
+    "/status - 查看异步会话池、后台子任务与队列健康快照\n"
+    "/stop [all] - 立即中断当前会话（或全部会话）在途推理与后台搜索子任务\n"
     "/reset - 清理当前会话上下文记忆窗口\n"
     "/quota - 查看当日调用次数、Token 用量与美元花费额度\n"
     "/reload - 热重载人设配置与唤醒词\n"
@@ -61,6 +65,8 @@ class AdminCommandRouter:
         on_list_memories: Callable[[bool], list[tuple[int, str, str]]] | None = None,
         on_forget: Callable[[int], bool] | None = None,
         on_profile: Callable[[int, str], str] | None = None,
+        on_stop: Callable[[str], tuple[bool, int]] | None = None,
+        on_status: Callable[[str], str] | None = None,
     ) -> None:
         self.admin_user_ids: set[int] = set(admin_user_ids)
         self._on_reset = on_reset
@@ -72,6 +78,8 @@ class AdminCommandRouter:
         self._on_list_memories = on_list_memories
         self._on_forget = on_forget
         self._on_profile = on_profile
+        self._on_stop = on_stop
+        self._on_status = on_status
 
     @staticmethod
     def _extract_command_and_args(msg: InboundMessage) -> tuple[str, str] | None:
@@ -99,6 +107,41 @@ class AdminCommandRouter:
     def _extract_builtin_command(cls, msg: InboundMessage) -> str | None:
         extracted = cls._extract_command_and_args(msg)
         return extracted[0] if extracted is not None else None
+
+    def _handle_stop(self, msg: InboundMessage, arg_text: str) -> CommandResult:
+        if self._on_stop is None:
+            return CommandResult(
+                handled=True,
+                reply_text="任务停止功能尚未绑定。",
+                command_name="stop",
+            )
+        target_scope = "*" if arg_text.strip().lower() == "all" else msg.session_key
+        cancelled_main, cancelled_subs = self._on_stop(target_scope)
+        scope_label = "全部会话" if target_scope == "*" else f"当前会话（{msg.session_key}）"
+        if not cancelled_main and cancelled_subs == 0:
+            reply = f"{scope_label}当前没有在途推理或后台子任务。"
+        else:
+            main_desc = "已中断主循环" if cancelled_main else "主循环空闲"
+            reply = f"已停止{scope_label}在途任务：{main_desc}，取消后台子任务 {cancelled_subs} 个。"
+        return CommandResult(
+            handled=True,
+            reply_text=reply,
+            command_name="stop",
+        )
+
+    def _handle_status(self, msg: InboundMessage) -> CommandResult:
+        if self._on_status is None:
+            return CommandResult(
+                handled=True,
+                reply_text="运行状态查询功能尚未绑定。",
+                command_name="status",
+            )
+        report = self._on_status(msg.session_key)
+        return CommandResult(
+            handled=True,
+            reply_text=report,
+            command_name="status",
+        )
 
     def _handle_persona(self, arg_text: str) -> CommandResult:
         if not arg_text:
@@ -344,6 +387,12 @@ class AdminCommandRouter:
                 reply_text="pong! qq-agent 在线运行中。",
                 command_name="ping",
             )
+
+        if cmd == "status":
+            return self._handle_status(msg)
+
+        if cmd == "stop":
+            return self._handle_stop(msg, arg_text)
 
         if cmd == "reset":
             if self._on_reset is None:
