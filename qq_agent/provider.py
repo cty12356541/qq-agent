@@ -1,4 +1,4 @@
-"""Async OpenAI-compatible & Anthropic-compatible LLM provider with multimodal vision, thinking control, retry, micro-USD accounting, and secret redaction."""
+"""Async OpenAI-compatible & Anthropic-compatible LLM provider with multimodal vision, tool calling, thinking control, retry, micro-USD accounting, and secret redaction."""
 
 from __future__ import annotations
 
@@ -7,6 +7,7 @@ import base64
 from collections.abc import Sequence
 from dataclasses import dataclass
 import io
+import json
 import logging
 import re
 import time
@@ -14,7 +15,7 @@ from typing import Any, Protocol, runtime_checkable
 
 import httpx
 
-from qq_agent.types import ChatMessage, ChatResult
+from qq_agent.types import ChatMessage, ChatResult, ToolCall, ToolDef
 
 logger = logging.getLogger(__name__)
 
@@ -199,6 +200,26 @@ def _extract_error_detail(response: httpx.Response, api_key: str) -> str:
     return _sanitize_error_message(detail, api_key)
 
 
+def _safe_parse_tool_arguments(raw_args: Any) -> dict[str, Any]:
+    """Parse tool-call JSON arguments safely without crashing on malformed or non-dict values."""
+    if raw_args is None:
+        return {}
+    if isinstance(raw_args, dict):
+        return dict(raw_args)
+    if isinstance(raw_args, str):
+        stripped = raw_args.strip()
+        if not stripped:
+            return {}
+        try:
+            parsed = json.loads(stripped)
+        except (ValueError, TypeError):
+            return {"_raw": raw_args}
+        if isinstance(parsed, dict):
+            return parsed
+        return {"_raw": parsed}
+    return {"_raw": raw_args}
+
+
 def _format_anthropic_content(msg: ChatMessage) -> str | list[dict[str, Any]]:
     if not msg.images:
         return msg.content
@@ -212,6 +233,82 @@ def _format_anthropic_content(msg: ChatMessage) -> str | list[dict[str, Any]]:
     if msg.content:
         blocks.append({"type": "text", "text": msg.content})
     return blocks
+
+
+def _to_anthropic_blocks(content: str | list[dict[str, Any]]) -> list[dict[str, Any]]:
+    if isinstance(content, list):
+        return list(content)
+    if content:
+        return [{"type": "text", "text": content}]
+    return []
+
+
+def _append_anthropic_turn(
+    conv_msgs: list[dict[str, Any]],
+    role: str,
+    content: str | list[dict[str, Any]],
+) -> None:
+    """Append an Anthropic turn, merging consecutive `user` turns into one block list."""
+    if role == "user" and conv_msgs and conv_msgs[-1]["role"] == "user":
+        prev_blocks = _to_anthropic_blocks(conv_msgs[-1]["content"])
+        new_blocks = _to_anthropic_blocks(content)
+        conv_msgs[-1]["content"] = [*prev_blocks, *new_blocks]
+    else:
+        conv_msgs.append({"role": role, "content": content})
+
+
+def _build_anthropic_messages(messages: Sequence[ChatMessage]) -> list[dict[str, Any]]:
+    """Serialize `ChatMessage` sequence into Anthropic `/v1/messages` turn array."""
+    conv_msgs: list[dict[str, Any]] = []
+    for msg in messages:
+        if msg.role == "system":
+            continue
+        if msg.tool_results:
+            result_blocks: list[dict[str, Any]] = []
+            for tr in msg.tool_results:
+                block: dict[str, Any] = {
+                    "type": "tool_result",
+                    "tool_use_id": tr.tool_call_id,
+                    "content": tr.content,
+                }
+                if tr.is_error:
+                    block["is_error"] = True
+                result_blocks.append(block)
+            for media_type, b64_data in msg.images:
+                result_blocks.append(
+                    {
+                        "type": "image",
+                        "source": {
+                            "type": "base64",
+                            "media_type": media_type,
+                            "data": b64_data,
+                        },
+                    }
+                )
+            if msg.content.strip():
+                result_blocks.append({"type": "text", "text": msg.content})
+            _append_anthropic_turn(conv_msgs, "user", result_blocks)
+        elif msg.role == "assistant" and msg.tool_calls:
+            assistant_blocks: list[dict[str, Any]] = []
+            if msg.content.strip():
+                assistant_blocks.append({"type": "text", "text": msg.content})
+            for tc in msg.tool_calls:
+                assistant_blocks.append(
+                    {
+                        "type": "tool_use",
+                        "id": tc.id,
+                        "name": tc.name,
+                        "input": dict(tc.arguments),
+                    }
+                )
+            _append_anthropic_turn(conv_msgs, "assistant", assistant_blocks)
+        else:
+            norm_role = "user" if msg.role == "tool" else msg.role
+            _append_anthropic_turn(conv_msgs, norm_role, _format_anthropic_content(msg))
+
+    if not conv_msgs:
+        conv_msgs = [{"role": "user", "content": ""}]
+    return conv_msgs
 
 
 def _format_openai_content(msg: ChatMessage) -> str | list[dict[str, Any]]:
@@ -229,6 +326,44 @@ def _format_openai_content(msg: ChatMessage) -> str | list[dict[str, Any]]:
     return blocks
 
 
+def _build_openai_messages(messages: Sequence[ChatMessage]) -> list[dict[str, Any]]:
+    """Serialize `ChatMessage` sequence into OpenAI `/chat/completions` messages array."""
+    serialized: list[dict[str, Any]] = []
+    for msg in messages:
+        if msg.role == "assistant" and msg.tool_calls:
+            serialized.append(
+                {
+                    "role": "assistant",
+                    "content": msg.content or None,
+                    "tool_calls": [
+                        {
+                            "id": tc.id,
+                            "type": "function",
+                            "function": {
+                                "name": tc.name,
+                                "arguments": json.dumps(tc.arguments, ensure_ascii=False),
+                            },
+                        }
+                        for tc in msg.tool_calls
+                    ],
+                }
+            )
+        elif msg.tool_results:
+            for tr in msg.tool_results:
+                serialized.append(
+                    {
+                        "role": "tool",
+                        "tool_call_id": tr.tool_call_id,
+                        "content": tr.content,
+                    }
+                )
+            if msg.role == "user" and (msg.content.strip() or msg.images):
+                serialized.append({"role": "user", "content": _format_openai_content(msg)})
+        else:
+            serialized.append({"role": msg.role, "content": _format_openai_content(msg)})
+    return serialized
+
+
 @runtime_checkable
 class LLMProvider(Protocol):
     """Protocol implemented by all chat completion providers."""
@@ -240,6 +375,8 @@ class LLMProvider(Protocol):
         model: str | None = None,
         temperature: float = 0.7,
         max_tokens: int = 1024,
+        tools: Sequence[ToolDef] | None = None,
+        enable_thinking: bool | None = None,
     ) -> ChatResult: ...
 
 
@@ -306,6 +443,7 @@ class OpenAICompatProvider:
         model: str | None = None,
         temperature: float = 0.7,
         max_tokens: int = 1024,
+        tools: Sequence[ToolDef] | None = None,
         enable_thinking: bool | None = None,
     ) -> ChatResult:
         raw_model = model or self._default_model
@@ -328,13 +466,7 @@ class OpenAICompatProvider:
                 headers["x-api-key"] = self._api_key
                 headers["Authorization"] = f"Bearer {self._api_key}"
             sys_parts = [m.content for m in messages if m.role == "system" and m.content]
-            conv_msgs = [
-                {"role": m.role, "content": _format_anthropic_content(m)}
-                for m in messages
-                if m.role != "system"
-            ]
-            if not conv_msgs:
-                conv_msgs = [{"role": "user", "content": ""}]
+            conv_msgs = _build_anthropic_messages(messages)
             payload: dict[str, Any] = {
                 "model": target_model,
                 "messages": conv_msgs,
@@ -343,6 +475,15 @@ class OpenAICompatProvider:
             }
             if sys_parts:
                 payload["system"] = "\n\n".join(sys_parts)
+            if tools:
+                payload["tools"] = [
+                    {
+                        "name": t.name,
+                        "description": t.description,
+                        "input_schema": t.input_schema,
+                    }
+                    for t in tools
+                ]
             if not effective_thinking:
                 payload["thinking"] = {"type": "disabled"}
         else:
@@ -351,12 +492,22 @@ class OpenAICompatProvider:
                 headers["Authorization"] = f"Bearer {self._api_key}"
             payload = {
                 "model": target_model,
-                "messages": [
-                    {"role": m.role, "content": _format_openai_content(m)} for m in messages
-                ],
+                "messages": _build_openai_messages(messages),
                 "temperature": temperature,
                 "max_tokens": max_tokens,
             }
+            if tools:
+                payload["tools"] = [
+                    {
+                        "type": "function",
+                        "function": {
+                            "name": t.name,
+                            "description": t.description,
+                            "parameters": t.input_schema,
+                        },
+                    }
+                    for t in tools
+                ]
             if not effective_thinking and "glm" in target_model.lower():
                 payload["thinking"] = {"type": "disabled"}
 
@@ -424,12 +575,31 @@ class OpenAICompatProvider:
                     "Malformed Anthropic payload: missing non-empty 'content' array",
                     status_code=response.status_code,
                 )
-            text_parts = [
-                str(b.get("text") or "")
-                for b in blocks
-                if isinstance(b, dict) and b.get("type") == "text"
-            ]
+            text_parts: list[str] = []
+            anthropic_tool_calls: list[ToolCall] = []
+            for idx, b in enumerate(blocks):
+                if not isinstance(b, dict):
+                    continue
+                b_type = b.get("type")
+                if b_type == "text":
+                    text_parts.append(str(b.get("text") or ""))
+                elif b_type == "tool_use":
+                    fn_name = str(b.get("name") or "")
+                    if not fn_name:
+                        continue
+                    call_id = str(b.get("id") or f"toolu_{idx}")
+                    args_dict = _safe_parse_tool_arguments(b.get("input"))
+                    anthropic_tool_calls.append(
+                        ToolCall(id=call_id, name=fn_name, arguments=args_dict)
+                    )
             content = "".join(text_parts).strip()
+            tool_calls = tuple(anthropic_tool_calls)
+            if not content and not tool_calls:
+                raise ProviderError(
+                    "Malformed Anthropic payload: empty text content and no tool_use blocks",
+                    status_code=response.status_code,
+                )
+            stop_reason = str(data.get("stop_reason") or "end_turn")
             prompt_tokens = int(usage.get("input_tokens") or 0) + int(
                 usage.get("cache_read_input_tokens") or 0
             )
@@ -453,6 +623,30 @@ class OpenAICompatProvider:
 
             raw_content = message_obj.get("content")
             content = "" if raw_content is None else str(raw_content)
+            openai_tool_calls: list[ToolCall] = []
+            raw_tool_calls = message_obj.get("tool_calls")
+            if isinstance(raw_tool_calls, list):
+                for idx, item in enumerate(raw_tool_calls):
+                    if not isinstance(item, dict):
+                        continue
+                    fn_obj = item.get("function")
+                    if not isinstance(fn_obj, dict):
+                        continue
+                    fn_name = str(fn_obj.get("name") or "")
+                    if not fn_name:
+                        continue
+                    call_id = str(item.get("id") or f"call_{idx}")
+                    args_dict = _safe_parse_tool_arguments(fn_obj.get("arguments"))
+                    openai_tool_calls.append(
+                        ToolCall(id=call_id, name=fn_name, arguments=args_dict)
+                    )
+            tool_calls = tuple(openai_tool_calls)
+            if not content.strip() and not tool_calls:
+                raise ProviderError(
+                    "Malformed completion payload: empty assistant content and no tool_calls",
+                    status_code=response.status_code,
+                )
+            stop_reason = str(first_choice.get("finish_reason") or "end_turn")
             prompt_tokens = int(usage.get("prompt_tokens") or 0)
             completion_tokens = int(usage.get("completion_tokens") or 0)
             total_tokens = int(usage.get("total_tokens") or (prompt_tokens + completion_tokens))
@@ -467,4 +661,6 @@ class OpenAICompatProvider:
             total_tokens=total_tokens,
             cost_micros_usd=cost_micros,
             latency_ms=latency_ms,
+            tool_calls=tool_calls,
+            stop_reason=stop_reason,
         )
