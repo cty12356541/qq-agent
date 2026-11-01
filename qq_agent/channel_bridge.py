@@ -5,19 +5,26 @@ from __future__ import annotations
 
 import asyncio
 from collections import OrderedDict, deque
+from collections.abc import Awaitable
 import dataclasses
-import hashlib
 import inspect
 import json
 import logging
 import secrets
-import sys
 from itertools import islice
 from pathlib import Path
 from typing import Any, Callable, Generic, Protocol, TypeVar, runtime_checkable
 
 import websockets
 
+from .llmos_sdk import (
+    INBOUND_CHANNEL_CREATE_KEY,
+    OUTBOUND_CHANNEL_CREATE_KEY,
+    derive_deterministic_id16,
+    fiber_id_for_session,
+    load_nlos_sdk,
+    process_id_for_role,
+)
 from .ob11 import (
     build_send_action,
     build_send_actions,
@@ -30,11 +37,13 @@ from .types import InboundMessage, OutboundReply
 logger = logging.getLogger(__name__)
 
 T = TypeVar("T")
+R = TypeVar("R")
 
 DEFAULT_CONSUMER_FIBER_ID: bytes = b"qq-agent-bus-fib"  # 16 non-zero bytes
 CONSUMER_FIBER_GENERATION: int = 1
 MSG_CACHE_CAPACITY: int = 500
 OUTBOUND_ECHO_CACHE_CAPACITY: int = 256
+MAX_REGISTERED_SEQ_CACHE: int = 4096
 
 MsgCacheEntry = tuple[int, str, str, tuple[str, ...]]
 
@@ -51,6 +60,72 @@ def _try_parse_int(val: Any) -> int | None:
         return int(text)
     except ValueError:
         return None
+
+
+def _random_nonzero_id16() -> bytes:
+    token = secrets.token_bytes(16)
+    while token == b"\x00" * 16:
+        token = secrets.token_bytes(16)
+    return token
+
+
+def _validate_nonzero_id16(raw: bytes, label: str) -> bytes:
+    val = bytes(raw)
+    if len(val) != 16 or val == b"\x00" * 16:
+        raise ValueError(f"{label} must be 16 non-zero bytes")
+    return val
+
+
+def _extract_acked_seq(state: Any) -> int:
+    if hasattr(state, "acknowledged_through_sequence"):
+        return int(state.acknowledged_through_sequence)
+    if hasattr(state, "consume_high_water"):
+        return int(state.consume_high_water)
+    return 0
+
+
+def _extract_trim_seq(state: Any, fallback_acked: int) -> int:
+    if hasattr(state, "trim_high_water"):
+        return int(state.trim_high_water)
+    if hasattr(state, "compacted_through_sequence"):
+        return int(state.compacted_through_sequence)
+    return fallback_acked
+
+
+def _extract_backlog_bytes(state: Any) -> int:
+    if hasattr(state, "backlog_bytes"):
+        return int(state.backlog_bytes)
+    if hasattr(state, "outstanding_bytes"):
+        return int(state.outstanding_bytes)
+    return 0
+
+
+def _accepts_kwarg(fn: Any, kwarg_name: str) -> bool:
+    try:
+        sig = inspect.signature(fn)
+    except (TypeError, ValueError):
+        return False
+    for param in sig.parameters.values():
+        if param.kind == inspect.Parameter.VAR_KEYWORD:
+            return True
+        if param.name == kwarg_name and param.kind in (
+            inspect.Parameter.POSITIONAL_OR_KEYWORD,
+            inspect.Parameter.KEYWORD_ONLY,
+        ):
+            return True
+    return False
+
+
+@dataclasses.dataclass(frozen=True, slots=True)
+class BusQueueMetrics:
+    """入站与出站双队列积压字节、持久化确认高水位及幂等重放标记。"""
+
+    inbound_backlog_bytes: int = 0
+    inbound_acked_seq: int = 0
+    outbound_backlog_bytes: int = 0
+    outbound_acked_seq: int = 0
+    inbound_replayed: bool = False
+    outbound_replayed: bool = False
 
 
 @runtime_checkable
@@ -122,6 +197,14 @@ class DirectMemoryBus:
         self._outbound: _MonotonicAckQueue[OutboundReply] = _MonotonicAckQueue()
         self._started: bool = False
 
+    @property
+    def inbound_high_water(self) -> int:
+        return self._inbound._high_water
+
+    @property
+    def outbound_high_water(self) -> int:
+        return self._outbound._high_water
+
     async def start(self) -> None:
         self._started = True
 
@@ -137,7 +220,21 @@ class DirectMemoryBus:
     ) -> list[tuple[int, InboundMessage]]:
         return self._inbound.receive(limit=limit)
 
-    async def ack_inbound(self, sequence: int) -> None:
+    async def register_inbound_consumption(
+        self,
+        sequence: int,
+        *,
+        fiber_id: bytes | None = None,
+    ) -> None:
+        _ = sequence, fiber_id
+
+    async def ack_inbound(
+        self,
+        sequence: int,
+        *,
+        fiber_id: bytes | None = None,
+    ) -> None:
+        _ = fiber_id
         self._inbound.ack(sequence)
 
     async def publish_outbound(self, reply: OutboundReply) -> int:
@@ -149,30 +246,35 @@ class DirectMemoryBus:
     ) -> list[tuple[int, OutboundReply]]:
         return self._outbound.receive(limit=limit)
 
-    async def ack_outbound(self, sequence: int) -> None:
+    async def ack_outbound(
+        self,
+        sequence: int,
+        *,
+        fiber_id: bytes | None = None,
+    ) -> None:
+        _ = fiber_id
         self._outbound.ack(sequence)
+
+    async def inspect_health(self) -> BusQueueMetrics:
+        in_bytes = sum(len(msg.to_json_bytes()) for _, msg in self._inbound._entries)
+        out_bytes = sum(len(rep.to_json_bytes()) for _, rep in self._outbound._entries)
+        return BusQueueMetrics(
+            inbound_backlog_bytes=in_bytes,
+            inbound_acked_seq=self._inbound._high_water,
+            outbound_backlog_bytes=out_bytes,
+            outbound_acked_seq=self._outbound._high_water,
+            inbound_replayed=False,
+            outbound_replayed=False,
+        )
 
 
 def _load_channel_client_cls(llmos_root: Path) -> Any:
-    """动态注入 `<llmos_root>/sdk/python` 并导入 `nlos_sdk.ChannelClient`。"""
-    try:
-        from nlos_sdk import ChannelClient
-
-        return ChannelClient
-    except ImportError:
-        sdk_python = str(llmos_root / "sdk" / "python")
-        if sdk_python not in sys.path:
-            sys.path.insert(0, sdk_python)
-        gen_python = str(llmos_root / "gen" / "python")
-        if gen_python not in sys.path:
-            sys.path.insert(0, gen_python)
-        from nlos_sdk import ChannelClient
-
-        return ChannelClient
+    """无污染加载 `<llmos_root>/sdk/python` 中的 `nlos_sdk.ChannelClient`。"""
+    return load_nlos_sdk(llmos_root).ChannelClient
 
 
 class LlmosChannelBus:
-    """基于 `llmos` `nlos.sabi.ChannelControl` 持久化队列的双通道总线（DOGFOOD-FULL 模式）。"""
+    """基于 `llmos` `nlos.sabi.ChannelControl` 持久化队列的崩溃安全双通道总线（DOGFOOD-FULL 模式）。"""
 
     def __init__(
         self,
@@ -181,85 +283,343 @@ class LlmosChannelBus:
         llmos_root: Path | str = r"D:\llmos",
         capacity_bytes: int = 65536,
         client_factory: Callable[[str], Any] | None = None,
+        role: str = "all-in-one",
+        inbound_create_key: bytes | None = INBOUND_CHANNEL_CREATE_KEY,
+        outbound_create_key: bytes | None = OUTBOUND_CHANNEL_CREATE_KEY,
+        compact_every_n: int = 32,
+        max_ipc_retries: int = 3,
+        retry_base_delay_s: float = 0.02,
     ) -> None:
+        if int(compact_every_n) < 1:
+            raise ValueError("compact_every_n must be >= 1")
         self._endpoint = endpoint
         self._llmos_root = Path(llmos_root)
         self._capacity_bytes = capacity_bytes
         self._client_factory = client_factory
+        self._role = str(role)
+        self._process_id: bytes = process_id_for_role(self._role)
+        self._compact_every_n = int(compact_every_n)
+        self._max_ipc_retries = max(0, int(max_ipc_retries))
+        self._retry_base_delay_s = max(0.0, float(retry_base_delay_s))
 
-        self._inbound_create_key: bytes = secrets.token_bytes(16)
-        self._outbound_create_key: bytes = secrets.token_bytes(16)
-        while self._outbound_create_key == self._inbound_create_key:
-            self._outbound_create_key = secrets.token_bytes(16)
+        if inbound_create_key is None:
+            self._inbound_create_key = _random_nonzero_id16()
+        else:
+            self._inbound_create_key = _validate_nonzero_id16(
+                inbound_create_key,
+                "inbound_create_key",
+            )
+
+        if outbound_create_key is None:
+            cand = _random_nonzero_id16()
+            while cand == self._inbound_create_key:
+                cand = _random_nonzero_id16()
+            self._outbound_create_key = cand
+        else:
+            self._outbound_create_key = _validate_nonzero_id16(
+                outbound_create_key,
+                "outbound_create_key",
+            )
+
+        if self._outbound_create_key == self._inbound_create_key:
+            raise ValueError(
+                "inbound_create_key and outbound_create_key must be distinct"
+            )
 
         self._consumer_fiber_id: bytes = DEFAULT_CONSUMER_FIBER_ID
         assert len(self._consumer_fiber_id) == 16
 
         self._client: Any | None = None
+        self._started: bool = False
         self._inbound_record: Any | None = None
         self._outbound_record: Any | None = None
         self._inbound_high_water: int = 0
         self._outbound_high_water: int = 0
+        self._last_inbound_compact_seq: int = 0
+        self._last_outbound_compact_seq: int = 0
+        self._registered_inbound_seqs: set[int] = set()
+        self._registered_outbound_seqs: set[int] = set()
+        self._ipc_error_cls: type[BaseException] | None = None
         self._rpc_lock = asyncio.Lock()
 
     @property
     def endpoint(self) -> str:
         return self._endpoint
 
+    @property
+    def role(self) -> str:
+        return self._role
+
+    @property
+    def process_id(self) -> bytes:
+        return self._process_id
+
+    @property
+    def inbound_channel_id(self) -> bytes | None:
+        return (
+            bytes(self._inbound_record.channel_id)
+            if self._inbound_record is not None
+            else None
+        )
+
+    @property
+    def outbound_channel_id(self) -> bytes | None:
+        return (
+            bytes(self._outbound_record.channel_id)
+            if self._outbound_record is not None
+            else None
+        )
+
+    @property
+    def inbound_high_water(self) -> int:
+        return self._inbound_high_water
+
+    @property
+    def outbound_high_water(self) -> int:
+        return self._outbound_high_water
+
+    def _build_client(self) -> Any:
+        if self._client_factory is not None:
+            return self._client_factory(self._endpoint)
+        sdk = load_nlos_sdk(self._llmos_root)
+        self._ipc_error_cls = sdk.IpcError
+        return sdk.ChannelClient(self._endpoint, process_id=self._process_id)
+
+    async def _close_client_unlocked(self) -> None:
+        client = self._client
+        self._client = None
+        if client is None:
+            return
+        close_fn = getattr(client, "close", None)
+        if callable(close_fn):
+            try:
+                maybe_coro = close_fn()
+                if inspect.isawaitable(maybe_coro):
+                    await maybe_coro
+            except Exception:
+                logger.debug("Ignored error closing stale ChannelClient", exc_info=True)
+
+    def _is_retryable_ipc_error(self, exc: BaseException) -> bool:
+        if isinstance(exc, (TimeoutError, OSError)):
+            return True
+        if self._ipc_error_cls is None:
+            try:
+                self._ipc_error_cls = load_nlos_sdk(self._llmos_root).IpcError
+            except Exception:
+                pass
+        if self._ipc_error_cls is not None and isinstance(exc, self._ipc_error_cls):
+            return True
+        return type(exc).__name__ == "IpcError"
+
+    async def _call_with_retry_locked(
+        self,
+        op_name: str,
+        fn: Callable[[Any], Awaitable[R]],
+    ) -> R:
+        attempt = 0
+        while True:
+            try:
+                if self._client is None:
+                    self._client = self._build_client()
+                return await fn(self._client)
+            except Exception as exc:
+                if (
+                    not self._is_retryable_ipc_error(exc)
+                    or attempt >= self._max_ipc_retries
+                ):
+                    raise
+                delay = self._retry_base_delay_s * (2**attempt)
+                logger.warning(
+                    "LlmosChannelBus.%s transient IPC failure (retry %d/%d in %.3fs): %s",
+                    op_name,
+                    attempt + 1,
+                    self._max_ipc_retries,
+                    delay,
+                    exc,
+                )
+                await self._close_client_unlocked()
+                attempt += 1
+                if delay > 0:
+                    await asyncio.sleep(delay)
+                self._client = self._build_client()
+
+    async def _call_with_retry(
+        self,
+        fn: Callable[[Any], Awaitable[R]],
+        *,
+        op_name: str = "rpc",
+    ) -> R:
+        async with self._rpc_lock:
+            return await self._call_with_retry_locked(op_name, fn)
+
+    def _prune_registered_inbound_seqs(self) -> None:
+        if not self._registered_inbound_seqs:
+            return
+        hw = self._inbound_high_water
+        self._registered_inbound_seqs = {
+            s for s in self._registered_inbound_seqs if s > hw
+        }
+        if len(self._registered_inbound_seqs) > MAX_REGISTERED_SEQ_CACHE:
+            ordered = sorted(self._registered_inbound_seqs)
+            self._registered_inbound_seqs = set(ordered[-MAX_REGISTERED_SEQ_CACHE:])
+
+    def _prune_registered_outbound_seqs(self) -> None:
+        if not self._registered_outbound_seqs:
+            return
+        hw = self._outbound_high_water
+        self._registered_outbound_seqs = {
+            s for s in self._registered_outbound_seqs if s > hw
+        }
+        if len(self._registered_outbound_seqs) > MAX_REGISTERED_SEQ_CACHE:
+            ordered = sorted(self._registered_outbound_seqs)
+            self._registered_outbound_seqs = set(ordered[-MAX_REGISTERED_SEQ_CACHE:])
+
+    def _effective_compact_every_n(self) -> int:
+        if (
+            self._client is not None
+            and self._compact_every_n == 32
+            and not hasattr(self._client, "inspect_queue")
+            and not hasattr(self._client, "enqueue_registered")
+        ):
+            return 1
+        return self._compact_every_n
+
     async def start(self) -> None:
         async with self._rpc_lock:
-            if self._client is None:
-                if self._client_factory is not None:
-                    self._client = self._client_factory(self._endpoint)
-                else:
-                    client_cls = _load_channel_client_cls(self._llmos_root)
-                    self._client = client_cls(self._endpoint)
+            in_rec = await self._call_with_retry_locked(
+                "create_channel[inbound]",
+                lambda c: c.create_channel(
+                    self._capacity_bytes,
+                    idempotency_key=self._inbound_create_key,
+                ),
+            )
+            out_rec = await self._call_with_retry_locked(
+                "create_channel[outbound]",
+                lambda c: c.create_channel(
+                    self._capacity_bytes,
+                    idempotency_key=self._outbound_create_key,
+                ),
+            )
+            self._inbound_record = in_rec
+            self._outbound_record = out_rec
 
-            self._inbound_record = await self._client.create_channel(
-                self._capacity_bytes,
-                idempotency_key=self._inbound_create_key,
-            )
-            self._outbound_record = await self._client.create_channel(
-                self._capacity_bytes,
-                idempotency_key=self._outbound_create_key,
-            )
+            if self._client is not None and hasattr(self._client, "inspect_queue"):
+                in_state = await self._call_with_retry_locked(
+                    "inspect_queue[inbound]",
+                    lambda c: c.inspect_queue(in_rec.channel_id),
+                )
+                self._inbound_high_water = _extract_acked_seq(in_state)
+                self._last_inbound_compact_seq = _extract_trim_seq(
+                    in_state,
+                    self._inbound_high_water,
+                )
+                self._prune_registered_inbound_seqs()
+
+                out_state = await self._call_with_retry_locked(
+                    "inspect_queue[outbound]",
+                    lambda c: c.inspect_queue(out_rec.channel_id),
+                )
+                self._outbound_high_water = _extract_acked_seq(out_state)
+                self._last_outbound_compact_seq = _extract_trim_seq(
+                    out_state,
+                    self._outbound_high_water,
+                )
+                self._prune_registered_outbound_seqs()
+
+            self._started = True
 
     async def close(self) -> None:
         async with self._rpc_lock:
-            if self._client is not None:
-                close_fn = getattr(self._client, "close", None)
-                if callable(close_fn):
-                    maybe_coro = close_fn()
-                    if inspect.isawaitable(maybe_coro):
-                        await maybe_coro
-                self._client = None
+            self._started = False
+            await self._close_client_unlocked()
 
-    def _require_started(self) -> tuple[Any, Any, Any]:
+    def _require_started_records(self) -> tuple[Any, Any]:
         if (
-            self._client is None
+            not self._started
             or self._inbound_record is None
             or self._outbound_record is None
         ):
             raise RuntimeError(
                 "LlmosChannelBus is not started; call `await bus.start()` first"
             )
-        return self._client, self._inbound_record, self._outbound_record
+        return self._inbound_record, self._outbound_record
 
-    def _consumption_key(self, channel_id: bytes, sequence: int) -> bytes:
-        return hashlib.blake2b(
-            channel_id + sequence.to_bytes(8, "big") + self._consumer_fiber_id,
-            digest_size=16,
-        ).digest()
+    def _resolve_fiber_id(self, fiber_id: bytes | None) -> bytes:
+        if fiber_id is None:
+            return self._consumer_fiber_id
+        return _validate_nonzero_id16(fiber_id, "fiber_id")
+
+    @staticmethod
+    def _consumption_key(
+        channel_id: bytes,
+        sequence: int,
+        fiber_id: bytes,
+    ) -> bytes:
+        return derive_deterministic_id16(
+            "qq-agent/consume/v1",
+            channel_id,
+            sequence,
+            fiber_id,
+        )
+
+    @staticmethod
+    async def _enqueue_entry(
+        client: Any,
+        rec: Any,
+        *,
+        payload: bytes,
+        producer_fiber: bytes,
+        idempotency_key: bytes,
+    ) -> Any:
+        if hasattr(client, "enqueue_registered"):
+            return await client.enqueue_registered(
+                rec.channel_id,
+                rec.generation,
+                rec.fencing_token,
+                payload,
+                producer_fiber,
+                CONSUMER_FIBER_GENERATION,
+                idempotency_key=idempotency_key,
+            )
+        if _accepts_kwarg(client.enqueue, "idempotency_key"):
+            return await client.enqueue(
+                rec.channel_id,
+                rec.generation,
+                rec.fencing_token,
+                payload,
+                idempotency_key=idempotency_key,
+            )
+        return await client.enqueue(
+            rec.channel_id,
+            rec.generation,
+            rec.fencing_token,
+            payload,
+        )
 
     async def publish_inbound(self, msg: InboundMessage) -> int:
         payload = msg.to_json_bytes()
+        producer_fiber = fiber_id_for_session(msg.session_key)
+        if msg.event_id.strip():
+            idem_key = derive_deterministic_id16(
+                "qq-agent/enqueue/in/v1",
+                msg.session_key,
+                msg.event_id,
+                msg.timestamp,
+            )
+        else:
+            idem_key = _random_nonzero_id16()
+
         async with self._rpc_lock:
-            client, inbound_rec, _ = self._require_started()
-            entry = await client.enqueue(
-                inbound_rec.channel_id,
-                inbound_rec.generation,
-                inbound_rec.fencing_token,
-                payload,
+            inbound_rec, _ = self._require_started_records()
+            entry = await self._call_with_retry_locked(
+                "enqueue[inbound]",
+                lambda c: self._enqueue_entry(
+                    c,
+                    inbound_rec,
+                    payload=payload,
+                    producer_fiber=producer_fiber,
+                    idempotency_key=idem_key,
+                ),
             )
             return int(entry.sequence)
 
@@ -270,47 +630,136 @@ class LlmosChannelBus:
         if limit <= 0:
             return []
         async with self._rpc_lock:
-            client, inbound_rec, _ = self._require_started()
-            entries = await client.receive(inbound_rec.channel_id, limit=limit)
+            inbound_rec, _ = self._require_started_records()
+            entries = await self._call_with_retry_locked(
+                "receive[inbound]",
+                lambda c: c.receive(inbound_rec.channel_id, limit=limit),
+            )
         return [
             (int(entry.sequence), InboundMessage.from_json_bytes(bytes(entry.payload)))
             for entry in entries
         ]
 
-    async def ack_inbound(self, sequence: int) -> None:
+    async def register_inbound_consumption(
+        self,
+        sequence: int,
+        *,
+        fiber_id: bytes | None = None,
+    ) -> None:
+        if sequence <= 0:
+            raise ValueError("sequence must be >= 1")
+        resolved_fiber = self._resolve_fiber_id(fiber_id)
         async with self._rpc_lock:
-            client, inbound_rec, _ = self._require_started()
+            inbound_rec, _ = self._require_started_records()
+            if (
+                sequence <= self._inbound_high_water
+                or sequence in self._registered_inbound_seqs
+            ):
+                self._prune_registered_inbound_seqs()
+                return
+            idem_key = self._consumption_key(
+                inbound_rec.channel_id,
+                sequence,
+                resolved_fiber,
+            )
+            await self._call_with_retry_locked(
+                "register_queue_consumption[inbound]",
+                lambda c: c.register_queue_consumption(
+                    inbound_rec.channel_id,
+                    inbound_rec.generation,
+                    sequence,
+                    resolved_fiber,
+                    CONSUMER_FIBER_GENERATION,
+                    idempotency_key=idem_key,
+                ),
+            )
+            self._registered_inbound_seqs.add(sequence)
+            self._prune_registered_inbound_seqs()
+
+    async def ack_inbound(
+        self,
+        sequence: int,
+        *,
+        fiber_id: bytes | None = None,
+    ) -> None:
+        resolved_fiber = self._resolve_fiber_id(fiber_id)
+        async with self._rpc_lock:
+            inbound_rec, _ = self._require_started_records()
             if sequence <= self._inbound_high_water:
                 return
             for seq in range(self._inbound_high_water + 1, sequence + 1):
-                await client.register_queue_consumption(
+                if seq in self._registered_inbound_seqs:
+                    continue
+                idem_key = self._consumption_key(
+                    inbound_rec.channel_id,
+                    seq,
+                    resolved_fiber,
+                )
+                await self._call_with_retry_locked(
+                    "register_queue_consumption[inbound]",
+                    lambda c, s=seq, k=idem_key: c.register_queue_consumption(
+                        inbound_rec.channel_id,
+                        inbound_rec.generation,
+                        s,
+                        resolved_fiber,
+                        CONSUMER_FIBER_GENERATION,
+                        idempotency_key=k,
+                    ),
+                )
+                self._registered_inbound_seqs.add(seq)
+
+            await self._call_with_retry_locked(
+                "ack[inbound]",
+                lambda c: c.ack(
                     inbound_rec.channel_id,
                     inbound_rec.generation,
-                    seq,
-                    self._consumer_fiber_id,
-                    CONSUMER_FIBER_GENERATION,
-                    idempotency_key=self._consumption_key(inbound_rec.channel_id, seq),
-                )
-            await client.ack(
-                inbound_rec.channel_id,
-                inbound_rec.generation,
-                sequence,
-            )
-            await client.compact(
-                inbound_rec.channel_id,
-                inbound_rec.generation,
+                    sequence,
+                ),
             )
             self._inbound_high_water = sequence
+            self._prune_registered_inbound_seqs()
+
+            if (
+                sequence - self._last_inbound_compact_seq
+            ) >= self._effective_compact_every_n():
+                await self._call_with_retry_locked(
+                    "compact[inbound]",
+                    lambda c: c.compact(
+                        inbound_rec.channel_id,
+                        inbound_rec.generation,
+                    ),
+                )
+                self._last_inbound_compact_seq = sequence
 
     async def publish_outbound(self, reply: OutboundReply) -> int:
         payload = reply.to_json_bytes()
-        async with self._rpc_lock:
-            client, _, outbound_rec = self._require_started()
-            entry = await client.enqueue(
-                outbound_rec.channel_id,
-                outbound_rec.generation,
-                outbound_rec.fencing_token,
+        session_key = (
+            f"group:{reply.target_id}"
+            if reply.chat_type == "group"
+            else f"private:{reply.target_id}"
+        )
+        producer_fiber = fiber_id_for_session(session_key)
+        if reply.correlation_id.strip():
+            idem_key = derive_deterministic_id16(
+                "qq-agent/enqueue/out/v1",
+                session_key,
+                reply.correlation_id,
                 payload,
+            )
+        else:
+            idem_key = _random_nonzero_id16()
+
+        async with self._rpc_lock:
+            _, outbound_rec = self._require_started_records()
+            entry = await self._call_with_retry_locked(
+                "enqueue[outbound]",
+                lambda c: self._enqueue_entry(
+                    c,
+                    outbound_rec,
+                    payload=payload,
+                    producer_fiber=producer_fiber,
+                    idempotency_key=idem_key,
+                ),
             )
             return int(entry.sequence)
 
@@ -321,37 +770,302 @@ class LlmosChannelBus:
         if limit <= 0:
             return []
         async with self._rpc_lock:
-            client, _, outbound_rec = self._require_started()
-            entries = await client.receive(outbound_rec.channel_id, limit=limit)
+            _, outbound_rec = self._require_started_records()
+            entries = await self._call_with_retry_locked(
+                "receive[outbound]",
+                lambda c: c.receive(outbound_rec.channel_id, limit=limit),
+            )
         return [
             (int(entry.sequence), OutboundReply.from_json_bytes(bytes(entry.payload)))
             for entry in entries
         ]
 
-    async def ack_outbound(self, sequence: int) -> None:
+    async def ack_outbound(
+        self,
+        sequence: int,
+        *,
+        fiber_id: bytes | None = None,
+    ) -> None:
+        resolved_fiber = self._resolve_fiber_id(fiber_id)
         async with self._rpc_lock:
-            client, _, outbound_rec = self._require_started()
+            _, outbound_rec = self._require_started_records()
             if sequence <= self._outbound_high_water:
                 return
             for seq in range(self._outbound_high_water + 1, sequence + 1):
-                await client.register_queue_consumption(
+                if seq in self._registered_outbound_seqs:
+                    continue
+                idem_key = self._consumption_key(
+                    outbound_rec.channel_id,
+                    seq,
+                    resolved_fiber,
+                )
+                await self._call_with_retry_locked(
+                    "register_queue_consumption[outbound]",
+                    lambda c, s=seq, k=idem_key: c.register_queue_consumption(
+                        outbound_rec.channel_id,
+                        outbound_rec.generation,
+                        s,
+                        resolved_fiber,
+                        CONSUMER_FIBER_GENERATION,
+                        idempotency_key=k,
+                    ),
+                )
+                self._registered_outbound_seqs.add(seq)
+
+            await self._call_with_retry_locked(
+                "ack[outbound]",
+                lambda c: c.ack(
                     outbound_rec.channel_id,
                     outbound_rec.generation,
-                    seq,
-                    self._consumer_fiber_id,
-                    CONSUMER_FIBER_GENERATION,
-                    idempotency_key=self._consumption_key(outbound_rec.channel_id, seq),
-                )
-            await client.ack(
-                outbound_rec.channel_id,
-                outbound_rec.generation,
-                sequence,
-            )
-            await client.compact(
-                outbound_rec.channel_id,
-                outbound_rec.generation,
+                    sequence,
+                ),
             )
             self._outbound_high_water = sequence
+            self._prune_registered_outbound_seqs()
+
+            if (
+                sequence - self._last_outbound_compact_seq
+            ) >= self._effective_compact_every_n():
+                await self._call_with_retry_locked(
+                    "compact[outbound]",
+                    lambda c: c.compact(
+                        outbound_rec.channel_id,
+                        outbound_rec.generation,
+                    ),
+                )
+                self._last_outbound_compact_seq = sequence
+
+    async def inspect_health(self) -> BusQueueMetrics:
+        async with self._rpc_lock:
+            inbound_rec, outbound_rec = self._require_started_records()
+            in_replayed = bool(getattr(inbound_rec, "replayed", False))
+            out_replayed = bool(getattr(outbound_rec, "replayed", False))
+            if self._client is not None and hasattr(self._client, "inspect_queue"):
+                in_state = await self._call_with_retry_locked(
+                    "inspect_queue[inbound]",
+                    lambda c: c.inspect_queue(inbound_rec.channel_id),
+                )
+                out_state = await self._call_with_retry_locked(
+                    "inspect_queue[outbound]",
+                    lambda c: c.inspect_queue(outbound_rec.channel_id),
+                )
+                in_acked = _extract_acked_seq(in_state)
+                out_acked = _extract_acked_seq(out_state)
+                self._inbound_high_water = max(self._inbound_high_water, in_acked)
+                self._outbound_high_water = max(self._outbound_high_water, out_acked)
+                return BusQueueMetrics(
+                    inbound_backlog_bytes=_extract_backlog_bytes(in_state),
+                    inbound_acked_seq=in_acked,
+                    outbound_backlog_bytes=_extract_backlog_bytes(out_state),
+                    outbound_acked_seq=out_acked,
+                    inbound_replayed=in_replayed,
+                    outbound_replayed=out_replayed,
+                )
+            return BusQueueMetrics(
+                inbound_backlog_bytes=0,
+                inbound_acked_seq=self._inbound_high_water,
+                outbound_backlog_bytes=0,
+                outbound_acked_seq=self._outbound_high_water,
+                inbound_replayed=in_replayed,
+                outbound_replayed=out_replayed,
+            )
+
+
+ResilientLlmosBus = LlmosChannelBus
+
+
+class AckCoordinator:
+    """跨多个并发 SessionActor 与后台子 Agent 的连续高水位延迟确认协调器。"""
+
+    def __init__(
+        self,
+        bus: MessageBus,
+        *,
+        initial_high_water: int | None = None,
+    ) -> None:
+        self._bus = bus
+        if initial_high_water is not None:
+            hw = max(0, int(initial_high_water))
+            self._contiguous_high_water = hw
+            self._expected_next: int | None = hw + 1
+        else:
+            bus_hw = int(
+                getattr(
+                    bus,
+                    "inbound_high_water",
+                    getattr(bus, "_inbound_high_water", 0),
+                )
+            )
+            self._contiguous_high_water = max(0, bus_hw)
+            self._expected_next = (
+                self._contiguous_high_water + 1
+                if self._contiguous_high_water > 0
+                else None
+            )
+
+        self._pending: set[int] = set()
+        self._completed: set[int] = set()
+        self._fibers: dict[int, bytes] = {}
+        self._lock = asyncio.Lock()
+
+    @property
+    def contiguous_high_water(self) -> int:
+        return self._contiguous_high_water
+
+    @property
+    def inflight_count(self) -> int:
+        return len(self._pending)
+
+    def is_tracked(self, sequence: int) -> bool:
+        return (
+            sequence <= self._contiguous_high_water
+            or sequence in self._pending
+            or sequence in self._completed
+        )
+
+    @staticmethod
+    def _resolve_track_fiber(
+        session_key: str,
+        fiber_id: bytes | None,
+    ) -> bytes:
+        if fiber_id is not None:
+            return _validate_nonzero_id16(fiber_id, "fiber_id")
+        clean_session = session_key.strip()
+        if clean_session:
+            return fiber_id_for_session(clean_session)
+        return DEFAULT_CONSUMER_FIBER_ID
+
+    def track(
+        self,
+        sequence: int,
+        session_key: str = "",
+        *,
+        fiber_id: bytes | None = None,
+    ) -> None:
+        if sequence <= 0:
+            raise ValueError("sequence must be >= 1")
+        if sequence <= self._contiguous_high_water or sequence in self._completed:
+            return
+        resolved_fiber = self._resolve_track_fiber(session_key, fiber_id)
+        if sequence in self._pending:
+            if fiber_id is not None:
+                self._fibers[sequence] = resolved_fiber
+            return
+
+        if self._expected_next is None or (
+            sequence < self._expected_next and sequence > self._contiguous_high_water
+        ):
+            self._expected_next = sequence
+        self._pending.add(sequence)
+        self._fibers[sequence] = resolved_fiber
+
+    async def mark_done(
+        self,
+        sequence: int,
+        *,
+        fiber_id: bytes | None = None,
+    ) -> int:
+        if sequence <= 0:
+            raise ValueError("sequence must be >= 1")
+        async with self._lock:
+            if sequence <= self._contiguous_high_water:
+                return self._contiguous_high_water
+
+            if fiber_id is not None:
+                resolved_fiber = _validate_nonzero_id16(fiber_id, "fiber_id")
+                self._fibers[sequence] = resolved_fiber
+            else:
+                resolved_fiber = self._fibers.get(sequence, DEFAULT_CONSUMER_FIBER_ID)
+
+            if self._expected_next is None:
+                self._expected_next = sequence
+
+            register_fn = getattr(self._bus, "register_inbound_consumption", None)
+            if callable(register_fn):
+                await register_fn(sequence, fiber_id=resolved_fiber)
+
+            self._pending.discard(sequence)
+            self._completed.add(sequence)
+
+            target_hw = self._contiguous_high_water
+            cursor = self._expected_next
+            advanced = False
+            while cursor in self._completed:
+                target_hw = cursor
+                cursor += 1
+                advanced = True
+
+            if advanced and target_hw > self._contiguous_high_water:
+                await self._bus.ack_inbound(target_hw)
+                for acked_seq in range(self._expected_next, cursor):
+                    self._completed.discard(acked_seq)
+                    self._fibers.pop(acked_seq, None)
+                self._contiguous_high_water = target_hw
+                self._expected_next = cursor
+
+            return self._contiguous_high_water
+
+
+class AdaptivePoller:
+    """无 `WaitControl` SABI 推送面（L-009）期间的指数退避与活跃瞬时复位轮询器。"""
+
+    __slots__ = (
+        "_backoff_factor",
+        "_current_s",
+        "_idle_streak",
+        "_max_interval_s",
+        "_min_interval_s",
+    )
+
+    def __init__(
+        self,
+        min_interval_s: float = 0.015,
+        max_interval_s: float = 0.20,
+        backoff_factor: float = 1.6,
+    ) -> None:
+        low = max(0.0005, float(min_interval_s))
+        high = max(low, float(max_interval_s))
+        factor = max(1.0, float(backoff_factor))
+        self._min_interval_s = low
+        self._max_interval_s = high
+        self._backoff_factor = factor
+        self._current_s = low
+        self._idle_streak = 0
+
+    @property
+    def min_interval_s(self) -> float:
+        return self._min_interval_s
+
+    @property
+    def max_interval_s(self) -> float:
+        return self._max_interval_s
+
+    @property
+    def backoff_factor(self) -> float:
+        return self._backoff_factor
+
+    @property
+    def current_interval_s(self) -> float:
+        return self._current_s
+
+    def reset(self) -> None:
+        self._idle_streak = 0
+        self._current_s = self._min_interval_s
+
+    def next_delay(self, had_items: bool) -> float:
+        if had_items:
+            self.reset()
+            return self._min_interval_s
+        if self._idle_streak == 0:
+            self._idle_streak = 1
+            self._current_s = self._min_interval_s
+            return self._min_interval_s
+        self._idle_streak += 1
+        self._current_s = min(
+            self._max_interval_s,
+            self._current_s * self._backoff_factor,
+        )
+        return self._current_s
 
 
 class NapCatWsAdapter:
@@ -363,6 +1077,7 @@ class NapCatWsAdapter:
         bus: MessageBus,
         *,
         bot_qq: int | None = None,
+        bot_name: str = "UD",
         access_token: str | None = None,
         auto_approve_friend_ids: set[int] | None = None,
         auto_approve_group_ids: set[int] | None = None,
@@ -375,6 +1090,7 @@ class NapCatWsAdapter:
         self._ws_url = ws_url
         self._bus = bus
         self._bot_qq = bot_qq
+        self._bot_name: str = str(bot_name).strip() or "UD"
         self._access_token = access_token
         self._auto_approve_friend_ids: set[int] = (
             set(auto_approve_friend_ids) if auto_approve_friend_ids else set()
@@ -386,6 +1102,19 @@ class NapCatWsAdapter:
         self._sticker_delay_s = max(0.0, float(sticker_delay_s))
         self._seen_request_flags: deque[str] = deque(maxlen=128)
         self._poll_interval_s = max(0.001, float(poll_interval_s))
+        if self._poll_interval_s < 0.05:
+            self._outbound_poller = AdaptivePoller(
+                min_interval_s=self._poll_interval_s,
+                max_interval_s=max(
+                    self._poll_interval_s * 4.0,
+                    self._poll_interval_s,
+                ),
+            )
+        else:
+            self._outbound_poller = AdaptivePoller(
+                min_interval_s=0.015,
+                max_interval_s=max(0.20, self._poll_interval_s),
+            )
         self._reconnect_delay_s = max(0.0, float(reconnect_delay_s))
         self._rpc_timeout_s = max(0.05, float(rpc_timeout_s))
 
@@ -404,6 +1133,14 @@ class NapCatWsAdapter:
     @property
     def bus(self) -> MessageBus:
         return self._bus
+
+    @property
+    def bot_name(self) -> str:
+        return self._bot_name
+
+    @property
+    def outbound_poller(self) -> AdaptivePoller:
+        return self._outbound_poller
 
     def _cache_put(self, msg_id: int, entry: MsgCacheEntry) -> None:
         if msg_id in self._msg_cache:
@@ -643,7 +1380,7 @@ class NapCatWsAdapter:
                         if self._bot_qq is not None
                         else (self._last_self_id or 0)
                     )
-                    self._cache_put(msg_id, (bot_uid, "UD", sent_text, ()))
+                    self._cache_put(msg_id, (bot_uid, self._bot_name, sent_text, ()))
 
     async def _maybe_auto_approve_request(self, ws: Any, data: dict[str, Any]) -> None:
         flag = data.get("flag")
@@ -764,9 +1501,11 @@ class NapCatWsAdapter:
             enrich_task.add_done_callback(session_tasks.discard)
 
     async def _send_loop(self, ws: Any, session_stop: asyncio.Event) -> None:
+        self._outbound_poller.reset()
         while not session_stop.is_set():
             batch = await self._bus.poll_outbound()
             if batch:
+                self._outbound_poller.next_delay(True)
                 for seq, reply in batch:
                     if session_stop.is_set():
                         return
@@ -800,10 +1539,11 @@ class NapCatWsAdapter:
                         await self._ws_send_json(ws, action)
                     await self._bus.ack_outbound(seq)
             else:
+                delay_s = self._outbound_poller.next_delay(False)
                 try:
                     await asyncio.wait_for(
                         session_stop.wait(),
-                        timeout=self._poll_interval_s,
+                        timeout=delay_s,
                     )
                     return
                 except TimeoutError:
@@ -926,12 +1666,17 @@ class NapCatWsAdapter:
 
 
 __all__ = [
+    "AckCoordinator",
+    "AdaptivePoller",
+    "BusQueueMetrics",
     "CONSUMER_FIBER_GENERATION",
     "DEFAULT_CONSUMER_FIBER_ID",
     "DirectMemoryBus",
     "LlmosChannelBus",
+    "MAX_REGISTERED_SEQ_CACHE",
     "MSG_CACHE_CAPACITY",
     "MessageBus",
     "NapCatWsAdapter",
     "OUTBOUND_ECHO_CACHE_CAPACITY",
+    "ResilientLlmosBus",
 ]
