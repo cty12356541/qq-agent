@@ -21,6 +21,7 @@ from .channel_bridge import (
 )
 from .config import AgentConfig
 from .guardrails import GuardrailManager
+from .memory import MemoryStore
 from .persona import PersonaManager
 from .provider import OpenAICompatProvider
 from .session import SessionStore
@@ -86,16 +87,23 @@ def _resolve_config_from_args(args: argparse.Namespace) -> AgentConfig:
 
 
 def _run_dry_check(cfg: AgentConfig) -> int:
-    persona = PersonaManager(cfg.persona_path)
+    persona = PersonaManager(
+        cfg.persona_path,
+        local_overlay_path=cfg.effective_persona_local_path,
+        personas_dir=cfg.effective_personas_dir,
+    )
     p_cfg = persona.current()
+    profiles = persona.list_profiles()
     stickers = StickerRegistry(cfg.stickers_dir, manifest_path=cfg.stickers_manifest_path)
     sticker_count = len(stickers.available_entries())
 
     if cfg.data_dir.exists():
         with (
-            SessionStore(cfg.sessions_db_path) as sessions,
+            SessionStore(cfg.sessions_db_path, max_window=24) as sessions,
+            MemoryStore(cfg.memory_db_path) as memory,
             GuardrailManager(
                 cfg.guardrails_db_path,
+                user_cooldown_s=1.0,
                 max_daily_calls=cfg.daily_max_calls,
                 max_daily_tokens=cfg.daily_max_tokens,
                 soft_daily_budget_micros=cfg.daily_soft_cost_micros_usd,
@@ -104,6 +112,7 @@ def _run_dry_check(cfg: AgentConfig) -> int:
             ) as guardrails,
         ):
             sessions.get_window("__dry_check__")
+            memory.get_summary("__dry_check__")
             snap = guardrails.snapshot()
         sqlite_desc = f"OK (data_dir={cfg.data_dir})"
     else:
@@ -115,9 +124,11 @@ def _run_dry_check(cfg: AgentConfig) -> int:
         with tempfile.TemporaryDirectory(prefix="qq-agent-dry-check-") as tmp_dir:
             tmp_root = Path(tmp_dir)
             with (
-                SessionStore(tmp_root / "sessions.sqlite3") as sessions,
+                SessionStore(tmp_root / "sessions.sqlite3", max_window=24) as sessions,
+                MemoryStore(tmp_root / "memory.sqlite3") as memory,
                 GuardrailManager(
                     tmp_root / "guardrails.sqlite3",
+                    user_cooldown_s=1.0,
                     max_daily_calls=cfg.daily_max_calls,
                     max_daily_tokens=cfg.daily_max_tokens,
                     soft_daily_budget_micros=cfg.daily_soft_cost_micros_usd,
@@ -126,6 +137,7 @@ def _run_dry_check(cfg: AgentConfig) -> int:
                 ) as guardrails,
             ):
                 sessions.get_window("__dry_check__")
+                memory.get_summary("__dry_check__")
                 snap = guardrails.snapshot()
         sqlite_desc = f"OK (临时自检库已通过 WAL 初始化校验，目标 data_dir={cfg.data_dir})"
 
@@ -150,6 +162,8 @@ def _run_dry_check(cfg: AgentConfig) -> int:
         else "未限制（允许所有所在群）"
     )
     aliases_desc = "、".join(p_cfg.aliases) if p_cfg.aliases else "无"
+    profile_desc = p_cfg.active_profile if p_cfg.active_profile else "default"
+    archived_desc = "、".join(profiles) if profiles else "无"
 
     summary = (
         "=== qq-agent 健康自检 (--dry-check) 通过 ===\n"
@@ -158,7 +172,9 @@ def _run_dry_check(cfg: AgentConfig) -> int:
         f"机器人 QQ  : {cfg.bot_qq if cfg.bot_qq is not None else '自动跟随 OB11 self_id'}\n"
         f"管理员数量 : {len(cfg.admin_user_ids)}\n"
         f"群聊白名单 : {groups_desc}\n"
-        f"当前人设   : {p_cfg.name}（别名: {aliases_desc} | 文件: {cfg.persona_path}）\n"
+        f"当前人设   : {p_cfg.name}（别名: {aliases_desc} | 激活档案: {profile_desc} | 归档库: {archived_desc}）\n"
+        f"群聊触发率 : 追问窗口={cfg.group_followup_window_s}s, 兴趣词={cfg.group_topic_prob:.0%}, 随机插话={cfg.group_proactive_prob:.0%}, 保底={cfg.group_proactive_every_n}条\n"
+        f"输入防抖   : 私聊={cfg.private_debounce_s}s, 群聊={cfg.group_debounce_s}s\n"
         f"表情包图库 : 已就绪 {sticker_count} 张（目录: {cfg.stickers_dir}）\n"
         f"LLM 接口   : {cfg.llm_base_url} (model={cfg.llm_model}, thinking={'ON' if cfg.llm_enable_thinking else 'OFF'}, vision={'ON' if cfg.enable_vision else 'OFF'}, API Key={key_status})\n"
         f"SQLite 护栏: {sqlite_desc} | 当日调用 {snap.calls_used}/{snap.max_daily_calls}"
@@ -176,12 +192,18 @@ async def run_runtime(
     effective_stop = stop_event if stop_event is not None else asyncio.Event()
 
     async with AsyncExitStack() as stack:
-        persona = PersonaManager(cfg.persona_path)
+        persona = PersonaManager(
+            cfg.persona_path,
+            local_overlay_path=cfg.effective_persona_local_path,
+            personas_dir=cfg.effective_personas_dir,
+        )
         stickers = StickerRegistry(cfg.stickers_dir, manifest_path=cfg.stickers_manifest_path)
-        sessions = stack.enter_context(SessionStore(cfg.sessions_db_path))
+        sessions = stack.enter_context(SessionStore(cfg.sessions_db_path, max_window=24))
+        memory = stack.enter_context(MemoryStore(cfg.memory_db_path))
         guardrails = stack.enter_context(
             GuardrailManager(
                 cfg.guardrails_db_path,
+                user_cooldown_s=1.0,
                 max_daily_calls=cfg.daily_max_calls,
                 max_daily_tokens=cfg.daily_max_tokens,
                 soft_daily_budget_micros=cfg.daily_soft_cost_micros_usd,
@@ -192,6 +214,11 @@ async def run_runtime(
         trigger = RuleTrigger(
             bot_qq=cfg.bot_qq,
             allowed_group_ids=cfg.allowed_group_ids,
+            followup_window_s=cfg.group_followup_window_s,
+            topic_prob=cfg.group_topic_prob,
+            proactive_prob=cfg.group_proactive_prob,
+            proactive_every_n=cfg.group_proactive_every_n,
+            proactive_cooldown_s=cfg.group_proactive_cooldown_s,
         )
         provider = await stack.enter_async_context(
             OpenAICompatProvider(
@@ -223,12 +250,15 @@ async def run_runtime(
             provider=provider,
             persona=persona,
             sessions=sessions,
+            memory=memory,
             trigger=trigger,
             guardrails=guardrails,
             stickers=stickers,
             enable_vision=cfg.enable_vision,
             bot_qq=cfg.bot_qq,
             admin_user_ids=cfg.admin_user_ids,
+            private_debounce_s=cfg.private_debounce_s,
+            group_debounce_s=cfg.group_debounce_s,
         )
         adapter = NapCatWsAdapter(
             cfg.napcat_ws_url,
@@ -240,13 +270,21 @@ async def run_runtime(
             stickers=stickers,
         )
 
+        p_now = persona.current()
         logger.info(
-            "qq-agent runtime ready (mode=%s, ws=%s, model=%s, thinking=%s, vision=%s, stickers=%d, admins=%d, groups=%s)",
+            "qq-agent runtime ready (mode=%s, ws=%s, model=%s, thinking=%s, vision=%s, profile=%s, archives=%s, debounce=%.1fs/%.1fs, group_trig=topic:%.0f%%/proactive:%.0f%%/every:%d, stickers=%d, admins=%d, groups=%s)",
             cfg.mode,
             cfg.napcat_ws_url,
             cfg.llm_model,
             "on" if cfg.llm_enable_thinking else "off",
             "on" if cfg.enable_vision else "off",
+            p_now.active_profile or "default",
+            persona.list_profiles(),
+            cfg.private_debounce_s,
+            cfg.group_debounce_s,
+            cfg.group_topic_prob * 100.0,
+            cfg.group_proactive_prob * 100.0,
+            cfg.group_proactive_every_n,
             len(stickers.available_entries()),
             len(cfg.admin_user_ids),
             sorted(cfg.allowed_group_ids) if cfg.allowed_group_ids else "ALL",

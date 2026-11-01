@@ -7,11 +7,13 @@ from .channel_bridge import DirectMemoryBus, LlmosChannelBus, MessageBus, NapCat
 from .commands import AdminCommandRouter
 from .config import AgentConfig, BusMode, load_dotenv_file
 from .guardrails import GuardrailManager, QuotaSnapshot
+from .memory import MemoryFact, MemoryStore, UserProfile
+from .ob11 import format_forward_nodes
 from .persona import PersonaConfig, PersonaManager
 from .provider import LLMProvider, OpenAICompatProvider, ProviderError
 from .session import SessionStore
 from .stickers import StickerEntry, StickerRegistry
-from .trigger import RuleTrigger
+from .trigger import DEFAULT_TOPIC_KEYWORDS, RuleTrigger
 from .types import (
     ChatMessage,
     ChatResult,
@@ -22,7 +24,7 @@ from .types import (
     TriggerDecision,
 )
 
-__version__ = "0.1.0"
+__version__ = "0.2.0"
 
 __all__ = [
     "AdminCommandRouter",
@@ -32,6 +34,7 @@ __all__ = [
     "ChatMessage",
     "ChatResult",
     "CommandResult",
+    "DEFAULT_TOPIC_KEYWORDS",
     "DirectMemoryBus",
     "GuardDecision",
     "GuardrailManager",
@@ -39,6 +42,8 @@ __all__ = [
     "LLMProvider",
     "LlmosChannelBus",
     "ManagedLlmosDaemon",
+    "MemoryFact",
+    "MemoryStore",
     "MessageBus",
     "NapCatWsAdapter",
     "OpenAICompatProvider",
@@ -52,6 +57,8 @@ __all__ = [
     "StickerEntry",
     "StickerRegistry",
     "TriggerDecision",
+    "UserProfile",
     "__version__",
+    "format_forward_nodes",
     "load_dotenv_file",
 ]
