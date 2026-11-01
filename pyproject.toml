@@ -4,6 +4,8 @@ version = "0.1.0"
 description = "QQ AI 机器人 — 跑在 llmos 上的自用小圈子智能体（M0 探针阶段）"
 requires-python = ">=3.12"
 dependencies = [
+    "httpx>=0.27",
+    "protobuf>=7.36.2",
     "websockets>=13",
 ]
 
