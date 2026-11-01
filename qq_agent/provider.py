@@ -1,10 +1,13 @@
-"""Async OpenAI-compatible & Anthropic-compatible LLM provider with retry, micro-USD accounting, and secret redaction."""
+"""Async OpenAI-compatible & Anthropic-compatible LLM provider with multimodal vision, thinking control, retry, micro-USD accounting, and secret redaction."""
 
 from __future__ import annotations
 
 import asyncio
+import base64
 from collections.abc import Sequence
 from dataclasses import dataclass
+import io
+import logging
 import re
 import time
 from typing import Any, Protocol, runtime_checkable
@@ -12,6 +15,8 @@ from typing import Any, Protocol, runtime_checkable
 import httpx
 
 from qq_agent.types import ChatMessage, ChatResult
+
+logger = logging.getLogger(__name__)
 
 _RETRYABLE_STATUS_CODES: frozenset[int] = frozenset({429, 500, 502, 503, 504})
 _BEARER_RE = re.compile(r"(Bearer\s+)[^\s\"',;]+", flags=re.IGNORECASE)
@@ -85,6 +90,79 @@ def estimate_cost_micros(model: str, prompt_tokens: int, completion_tokens: int)
     return get_model_pricing(model).compute_micros(prompt_tokens, completion_tokens)
 
 
+def normalize_image_bytes_for_vision(
+    raw: bytes,
+    *,
+    max_side: int = 768,
+) -> tuple[str, str] | None:
+    """Normalize raw image/GIF bytes into compact `(media_type, base64_str)` for vision LLMs."""
+    if not raw:
+        return None
+    try:
+        from PIL import Image
+
+        with Image.open(io.BytesIO(raw)) as im:
+            n_frames = getattr(im, "n_frames", 1)
+            if n_frames > 1:
+                im.seek(n_frames // 2)
+            rgba = im.convert("RGBA")
+            if max(rgba.width, rgba.height) > max_side:
+                rgba.thumbnail((max_side, max_side), Image.Resampling.LANCZOS)
+            canvas = Image.new("RGBA", rgba.size, (255, 255, 255, 255))
+            canvas.alpha_composite(rgba)
+            rgb = canvas.convert("RGB")
+            buf = io.BytesIO()
+            rgb.save(buf, format="JPEG", quality=82, optimize=True)
+            return ("image/jpeg", base64.b64encode(buf.getvalue()).decode("ascii"))
+    except Exception:
+        # Magic-byte fallback if Pillow cannot decode
+        if raw.startswith(b"\xff\xd8\xff"):
+            return ("image/jpeg", base64.b64encode(raw).decode("ascii"))
+        if raw.startswith(b"\x89PNG\r\n\x1a\n"):
+            return ("image/png", base64.b64encode(raw).decode("ascii"))
+        if raw.startswith((b"GIF87a", b"GIF89a")):
+            return ("image/gif", base64.b64encode(raw).decode("ascii"))
+        if len(raw) >= 12 and raw[:4] == b"RIFF" and raw[8:12] == b"WEBP":
+            return ("image/webp", base64.b64encode(raw).decode("ascii"))
+        return None
+
+
+async def fetch_vision_images(
+    urls: Sequence[str],
+    *,
+    max_images: int = 2,
+    max_bytes: int = 5 * 1024 * 1024,
+    timeout_s: float = 8.0,
+    transport: httpx.AsyncBaseTransport | None = None,
+) -> tuple[tuple[str, str], ...]:
+    """Download up to `max_images` inbound HTTP(S) image URLs and encode them for multimodal vision."""
+    candidates = [
+        u.strip()
+        for u in urls
+        if isinstance(u, str) and u.strip().lower().startswith(("http://", "https://"))
+    ][: max(0, int(max_images))]
+    if not candidates:
+        return ()
+
+    results: list[tuple[str, str]] = []
+    async with httpx.AsyncClient(
+        timeout=httpx.Timeout(timeout_s),
+        follow_redirects=True,
+        transport=transport,
+    ) as client:
+        for url in candidates:
+            try:
+                resp = await client.get(url)
+                if resp.status_code != 200 or not resp.content or len(resp.content) > max_bytes:
+                    continue
+                normalized = normalize_image_bytes_for_vision(resp.content)
+                if normalized is not None:
+                    results.append(normalized)
+            except Exception as exc:
+                logger.debug("Skipping inbound image vision fetch (%s)", type(exc).__name__)
+    return tuple(results)
+
+
 def _sanitize_error_message(raw: str, api_key: str) -> str:
     """Redact API keys and bearer tokens before truncating error text."""
     sanitized = raw
@@ -121,6 +199,36 @@ def _extract_error_detail(response: httpx.Response, api_key: str) -> str:
     return _sanitize_error_message(detail, api_key)
 
 
+def _format_anthropic_content(msg: ChatMessage) -> str | list[dict[str, Any]]:
+    if not msg.images:
+        return msg.content
+    blocks: list[dict[str, Any]] = [
+        {
+            "type": "image",
+            "source": {"type": "base64", "media_type": media_type, "data": b64_data},
+        }
+        for media_type, b64_data in msg.images
+    ]
+    if msg.content:
+        blocks.append({"type": "text", "text": msg.content})
+    return blocks
+
+
+def _format_openai_content(msg: ChatMessage) -> str | list[dict[str, Any]]:
+    if not msg.images:
+        return msg.content
+    blocks: list[dict[str, Any]] = [
+        {
+            "type": "image_url",
+            "image_url": {"url": f"data:{media_type};base64,{b64_data}"},
+        }
+        for media_type, b64_data in msg.images
+    ]
+    if msg.content:
+        blocks.append({"type": "text", "text": msg.content})
+    return blocks
+
+
 @runtime_checkable
 class LLMProvider(Protocol):
     """Protocol implemented by all chat completion providers."""
@@ -144,6 +252,7 @@ class OpenAICompatProvider:
         api_key: str,
         base_url: str = "https://api.deepseek.com/v1",
         default_model: str = "deepseek-chat",
+        enable_thinking: bool = False,
         timeout_s: float = 90.0,
         max_retries: int = 2,
         transport: httpx.AsyncBaseTransport | None = None,
@@ -152,6 +261,7 @@ class OpenAICompatProvider:
         self._api_key = api_key
         self._base_url = base_url.rstrip("/")
         self._default_model = default_model
+        self._enable_thinking = bool(enable_thinking)
         self._max_retries = max(0, int(max_retries))
         self._retry_base_delay_s = max(0.0, float(retry_base_delay_s))
         lower_url = self._base_url.lower()
@@ -161,10 +271,15 @@ class OpenAICompatProvider:
             transport=transport,
         )
 
+    @property
+    def enable_thinking(self) -> bool:
+        return self._enable_thinking
+
     def __repr__(self) -> str:
         return (
             f"OpenAICompatProvider(base_url={self._base_url!r}, "
-            f"default_model={self._default_model!r}, api_key='***')"
+            f"default_model={self._default_model!r}, "
+            f"enable_thinking={self._enable_thinking!r}, api_key='***')"
         )
 
     async def __aenter__(self) -> OpenAICompatProvider:
@@ -190,11 +305,15 @@ class OpenAICompatProvider:
         *,
         model: str | None = None,
         temperature: float = 0.7,
-        max_tokens: int = 2048,
+        max_tokens: int = 1024,
+        enable_thinking: bool | None = None,
     ) -> ChatResult:
         raw_model = model or self._default_model
         target_model = (
             self._normalize_model_name(raw_model) if self._is_anthropic else raw_model
+        )
+        effective_thinking = (
+            self._enable_thinking if enable_thinking is None else bool(enable_thinking)
         )
 
         headers: dict[str, str] = {"Content-Type": "application/json"}
@@ -210,7 +329,7 @@ class OpenAICompatProvider:
                 headers["Authorization"] = f"Bearer {self._api_key}"
             sys_parts = [m.content for m in messages if m.role == "system" and m.content]
             conv_msgs = [
-                {"role": m.role, "content": m.content}
+                {"role": m.role, "content": _format_anthropic_content(m)}
                 for m in messages
                 if m.role != "system"
             ]
@@ -224,16 +343,22 @@ class OpenAICompatProvider:
             }
             if sys_parts:
                 payload["system"] = "\n\n".join(sys_parts)
+            if not effective_thinking:
+                payload["thinking"] = {"type": "disabled"}
         else:
             url = f"{self._base_url}/chat/completions"
             if self._api_key:
                 headers["Authorization"] = f"Bearer {self._api_key}"
             payload = {
                 "model": target_model,
-                "messages": [{"role": m.role, "content": m.content} for m in messages],
+                "messages": [
+                    {"role": m.role, "content": _format_openai_content(m)} for m in messages
+                ],
                 "temperature": temperature,
                 "max_tokens": max_tokens,
             }
+            if not effective_thinking and "glm" in target_model.lower():
+                payload["thinking"] = {"type": "disabled"}
 
         max_attempts = 1 + self._max_retries
         start_perf = time.perf_counter()

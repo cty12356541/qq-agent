@@ -10,6 +10,7 @@ from .guardrails import GuardrailManager, QuotaSnapshot
 from .persona import PersonaConfig, PersonaManager
 from .provider import LLMProvider, OpenAICompatProvider, ProviderError
 from .session import SessionStore
+from .stickers import StickerEntry, StickerRegistry
 from .trigger import RuleTrigger
 from .types import (
     ChatMessage,
@@ -48,6 +49,8 @@ __all__ = [
     "QuotaSnapshot",
     "RuleTrigger",
     "SessionStore",
+    "StickerEntry",
+    "StickerRegistry",
     "TriggerDecision",
     "__version__",
     "load_dotenv_file",

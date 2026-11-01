@@ -84,6 +84,19 @@ def _parse_int_with_default(raw: str | None, default: int, field_name: str) -> i
     return default if parsed is None else parsed
 
 
+def _parse_bool_with_default(raw: str | None, default: bool, field_name: str) -> bool:
+    if raw is None:
+        return default
+    token = raw.strip().lower()
+    if not token:
+        return default
+    if token in {"1", "true", "yes", "on", "enabled"}:
+        return True
+    if token in {"0", "false", "no", "off", "disabled"}:
+        return False
+    raise ValueError(f"Invalid boolean for {field_name}: {raw!r}")
+
+
 def _parse_int_set(raw: str | None, field_name: str) -> set[int]:
     if raw is None:
         return set()
@@ -114,12 +127,15 @@ class AgentConfig:
     llm_base_url: str = "https://api.deepseek.com/v1"
     llm_model: str = "deepseek-chat"
     llm_cheap_model: str | None = None
+    llm_enable_thinking: bool = False
+    enable_vision: bool = True
 
     llmos_root: Path = field(default_factory=_default_llmos_root)
     llmos_plain_endpoint: str | None = None
 
     data_dir: Path = field(default_factory=lambda: Path("data"))
     persona_path: Path = field(default_factory=lambda: Path("config/persona.default.toml"))
+    stickers_manifest_path: Path = field(default_factory=lambda: Path("config/stickers.toml"))
 
     daily_max_calls: int = 200
     daily_max_tokens: int = 200_000
@@ -135,6 +151,10 @@ class AgentConfig:
     @property
     def guardrails_db_path(self) -> Path:
         return self.data_dir / "guardrails.sqlite3"
+
+    @property
+    def stickers_dir(self) -> Path:
+        return self.data_dir / "stickers"
 
     @property
     def llmos_daemon_root(self) -> Path:
@@ -198,10 +218,19 @@ class AgentConfig:
             llm_base_url=get_nonempty("LLM_BASE_URL", "https://api.deepseek.com/v1"),
             llm_model=get_nonempty("LLM_MODEL", "deepseek-chat"),
             llm_cheap_model=get_optional_str("LLM_CHEAP_MODEL"),
+            llm_enable_thinking=_parse_bool_with_default(
+                get_raw("LLM_ENABLE_THINKING"), False, "LLM_ENABLE_THINKING"
+            ),
+            enable_vision=_parse_bool_with_default(
+                get_raw("QQ_ENABLE_VISION"), True, "QQ_ENABLE_VISION"
+            ),
             llmos_root=llmos_root,
             llmos_plain_endpoint=get_optional_str("LLMOS_PLAIN_ENDPOINT"),
             data_dir=Path(get_nonempty("QQ_DATA_DIR", "data")),
             persona_path=Path(get_nonempty("QQ_PERSONA_PATH", "config/persona.default.toml")),
+            stickers_manifest_path=Path(
+                get_nonempty("QQ_STICKERS_MANIFEST", "config/stickers.toml")
+            ),
             daily_max_calls=_parse_int_with_default(
                 get_raw("QQ_DAILY_MAX_CALLS"), 200, "QQ_DAILY_MAX_CALLS"
             ),

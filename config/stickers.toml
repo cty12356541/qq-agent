@@ -1,0 +1,127 @@
+# 奶龙 & 奶蛙系列表情包清单（图文件存放于 data/stickers/，支持热加载与自定义拖入图片自动发现）
+
+[[stickers]]
+id = "naiwa_point_laugh"
+series = "奶蛙"
+file = "naiwa_point_laugh.png"
+label = "捂肚指着对方大笑（无情嘲笑/指人乐/看小丑）"
+tags = ["嘲笑", "指你笑", "小丑", "指人"]
+
+[[stickers]]
+id = "naiwa_belly_laugh"
+series = "奶蛙"
+file = "naiwa_belly_laugh.gif"
+label = "捧心魔性狂笑动图（绷不住了/又好笑又爱看）"
+tags = ["捧心笑", "大笑", "狂笑", "乐死"]
+
+[[stickers]]
+id = "naiwa_bow_laugh"
+series = "奶蛙"
+file = "naiwa_bow_laugh.gif"
+label = "仰天弯腰狂笑动图（笑到缺氧/乐麻了）"
+tags = ["弯腰笑", "仰天大笑", "笑疯"]
+
+[[stickers]]
+id = "naiwa_blur_laugh"
+series = "奶蛙"
+file = "naiwa_blur_laugh.gif"
+label = "笑到模糊重影动图（极致抽象难绷）"
+tags = ["笑到模糊", "重影", "抽象笑"]
+
+[[stickers]]
+id = "naiwa_stare"
+series = "奶蛙"
+file = "naiwa_stare.png"
+label = "大绿眼智慧凝视（无语/沉默看你整活/静静看着）"
+tags = ["凝视", "无语", "沉默", "智慧眼神", "盯着你"]
+
+[[stickers]]
+id = "naiwa_question"
+series = "奶蛙"
+file = "naiwa_question.png"
+label = "半眯眼配红框问号（满脸问号/啥玩意/你在说啥）"
+tags = ["问号", "疑惑", "不懂", "?"]
+
+[[stickers]]
+id = "naiwa_think"
+series = "奶蛙"
+file = "naiwa_think.png"
+label = "歪头托腮微笑（吃瓜看戏/若有所思/你说得对）"
+tags = ["托腮", "吃瓜", "看戏", "思考"]
+
+[[stickers]]
+id = "naiwa_angry"
+series = "奶蛙"
+file = "naiwa_angry.png"
+label = "皱眉气鼓鼓（不爽/红温/急了）"
+tags = ["生气", "红温", "气鼓鼓", "不爽"]
+
+[[stickers]]
+id = "naiwa_heart"
+series = "奶蛙"
+file = "naiwa_heart.png"
+label = "歪头吐舌比心（敷衍比心/卖萌/贴贴）"
+tags = ["比心", "爱你", "吐舌", "贴贴"]
+
+[[stickers]]
+id = "nailong_desk_laugh"
+series = "奶龙"
+file = "nailong_desk_laugh.gif"
+label = "拍桌狂笑动图（敲桌子大笑/太好笑了）"
+tags = ["拍桌笑", "敲桌", "好笑"]
+
+[[stickers]]
+id = "nailong_hold_laugh"
+series = "奶龙"
+file = "nailong_hold_laugh.gif"
+label = "握拳强忍背后狂笑虚影动图（憋笑内伤/表面稳住其实难绷）"
+tags = ["憋笑", "难绷", "忍笑"]
+
+[[stickers]]
+id = "nailong_stop"
+series = "奶龙"
+file = "nailong_stop.gif"
+label = "伸手打住拒绝动图（停停停/达咩/别说了）"
+tags = ["打住", "停", "拒绝", "达咩"]
+
+[[stickers]]
+id = "nailong_dance"
+series = "奶龙"
+file = "nailong_dance.gif"
+label = "冒爱心扭腰热舞动图（骚气扭屁股/庆祝/嗨起来）"
+tags = ["跳舞", "扭腰", "扭屁股", "庆祝"]
+
+[[stickers]]
+id = "nailong_wheelchair"
+series = "奶龙"
+file = "nailong_wheelchair.gif"
+label = "雪地轮椅飙车漂移动图（抽象冲锋/坐轮椅溜了）"
+tags = ["轮椅", "飙车", "溜了", "冲锋"]
+
+[[stickers]]
+id = "nailong_calm_book"
+series = "奶龙"
+file = "nailong_calm_book.jpg"
+label = "认真看书《成为一只平静的龙要流多少眼泪》（强行冷静/血压高先看书）"
+tags = ["看书", "冷静", "平静", "修心"]
+
+[[stickers]]
+id = "nailong_judge"
+series = "奶龙"
+file = "nailong_judge.jpg"
+label = "双手交叠严肃审视（压迫感审讯/请开始你的表演）"
+tags = ["审视", "严肃", "谈判", "表演"]
+
+[[stickers]]
+id = "nailong_boss_laugh"
+series = "奶龙"
+file = "nailong_boss_laugh.jpg"
+label = "西装革履成功人士狂笑（赢麻了/老板大气）"
+tags = ["西装", "赢麻了", "老板"]
+
+[[stickers]]
+id = "nailong_emo"
+series = "奶龙"
+file = "nailong_emo.jpg"
+label = "窗边忧郁看雨（网抑云/寂寞沉思/叹气）"
+tags = ["忧郁", "看窗", "emo", "网抑云"]

@@ -1,5 +1,5 @@
 # qq_agent/ob11.py
-"""OneBot v11 事件解析与消息段构建（兼容 M0 探针、OB11 数组段与 CQ 码字符串）。"""
+"""OneBot v11 事件解析与消息段构建（兼容 M0 探针、OB11 数组段、CQ 码、图片与原生动画表情包）。"""
 
 from __future__ import annotations
 
@@ -75,6 +75,18 @@ def _parse_cq_segments(cq_text: str) -> list[dict[str, Any]]:
     return segments
 
 
+def _classify_image_placeholder(seg_data: dict[str, Any]) -> str:
+    summary = str(seg_data.get("summary") or "").strip()
+    sub_type = seg_data.get("sub_type")
+    try:
+        is_sticker = int(sub_type) == 1 if sub_type is not None else False
+    except (TypeError, ValueError):
+        is_sticker = False
+    if summary:
+        return summary
+    return "[动画表情]" if is_sticker else "[图片]"
+
+
 def event_to_inbound(
     data: dict[str, Any],
     bot_qq: int | None = None,
@@ -113,6 +125,8 @@ def event_to_inbound(
     mentioned_bot = False
     reply_to_id: int | None = None
     text_parts: list[str] = []
+    image_urls: list[str] = []
+    has_qq_face = False
 
     for seg in segments:
         seg_type = str(seg.get("type") or "")
@@ -140,8 +154,28 @@ def event_to_inbound(
                     reply_to_id = int(str(reply_raw).strip())
                 except ValueError:
                     pass
+        elif seg_type == "image":
+            placeholder = _classify_image_placeholder(seg_data)
+            if text_parts and not text_parts[-1].endswith((" ", "\n")):
+                text_parts.append(" ")
+            text_parts.append(placeholder)
+            url_val = str(seg_data.get("url") or "").strip()
+            file_val = str(seg_data.get("file") or "").strip()
+            if url_val.lower().startswith(("http://", "https://")):
+                image_urls.append(url_val)
+            elif file_val.lower().startswith(("http://", "https://")):
+                image_urls.append(file_val)
+        elif seg_type == "mface":
+            m_summary = str(seg_data.get("summary") or "[商城表情]").strip()
+            if text_parts and not text_parts[-1].endswith((" ", "\n")):
+                text_parts.append(" ")
+            text_parts.append(m_summary)
+        elif seg_type == "face":
+            has_qq_face = True
 
     text = "".join(text_parts).strip()
+    if not text and has_qq_face:
+        text = "[QQ表情]"
 
     raw_sender = data.get("sender")
     sender = raw_sender if isinstance(raw_sender, dict) else {}
@@ -169,14 +203,41 @@ def event_to_inbound(
         reply_to_id=reply_to_id,
         self_id=self_id,
         timestamp=timestamp,
+        image_urls=tuple(image_urls),
     )
+
+
+def _wrap_target_frame(
+    reply: OutboundReply,
+    segments: list[dict[str, Any]],
+    echo: str | None = None,
+) -> dict[str, Any]:
+    if reply.chat_type == "group":
+        frame: dict[str, Any] = {
+            "action": "send_group_msg",
+            "params": {
+                "group_id": reply.target_id,
+                "message": segments,
+            },
+        }
+    else:
+        frame = {
+            "action": "send_private_msg",
+            "params": {
+                "user_id": reply.target_id,
+                "message": segments,
+            },
+        }
+    if echo:
+        frame["echo"] = echo
+    return frame
 
 
 def build_send_action(
     reply: OutboundReply,
     echo: str | None = None,
 ) -> dict[str, Any]:
-    """根据 OutboundReply 构建 OneBot v11 正向 WS 发送消息动作帧。"""
+    """根据 OutboundReply 构建单条 OneBot v11 文本发送消息动作帧。"""
     segments: list[dict[str, Any]] = []
     if reply.reply_to_message_id is not None:
         segments.append(
@@ -190,32 +251,56 @@ def build_send_action(
             text_body = f" {text_body}"
 
     segments.append({"type": "text", "data": {"text": text_body}})
+    return _wrap_target_frame(reply, segments, echo=echo)
 
-    if reply.chat_type == "group":
-        action_frame: dict[str, Any] = {
-            "action": "send_group_msg",
-            "params": {
-                "group_id": reply.target_id,
-                "message": segments,
+
+def build_sticker_action(
+    reply: OutboundReply,
+    sticker_file: str,
+    echo: str | None = None,
+) -> dict[str, Any]:
+    """构建独立无边框原生 QQ `[动画表情]` (`sub_type=1`) 发送动作帧。"""
+    segments: list[dict[str, Any]] = [
+        {
+            "type": "image",
+            "data": {
+                "file": sticker_file,
+                "sub_type": 1,
+                "summary": "[动画表情]",
             },
         }
-    else:
-        action_frame = {
-            "action": "send_private_msg",
-            "params": {
-                "user_id": reply.target_id,
-                "message": segments,
-            },
-        }
+    ]
+    return _wrap_target_frame(reply, segments, echo=echo)
 
-    if echo:
-        action_frame["echo"] = echo
-    return action_frame
+
+def build_send_actions(
+    reply: OutboundReply,
+    *,
+    sticker_file: str | None = None,
+    echo: str | None = None,
+) -> list[dict[str, Any]]:
+    """构建拟人化出站动作帧序列：纯文字 1 帧、纯表情包 1 帧、文字+表情包拆分为 2 帧。"""
+    has_text = bool(reply.text.strip())
+    if not sticker_file:
+        if not has_text:
+            return []
+        return [build_send_action(reply, echo=echo)]
+
+    if not has_text:
+        return [build_sticker_action(reply, sticker_file, echo=echo)]
+
+    sticker_echo = f"{echo}-sticker" if echo else None
+    return [
+        build_send_action(reply, echo=echo),
+        build_sticker_action(reply, sticker_file, echo=sticker_echo),
+    ]
 
 
 __all__ = [
     "Ob11Event",
     "build_send_action",
+    "build_send_actions",
+    "build_sticker_action",
     "event_to_inbound",
     "parse_event",
 ]

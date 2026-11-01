@@ -24,9 +24,11 @@ from .guardrails import GuardrailManager
 from .persona import PersonaManager
 from .provider import OpenAICompatProvider
 from .session import SessionStore
+from .stickers import StickerRegistry
 from .trigger import RuleTrigger
 
 _REPO_DEFAULT_PERSONA = Path(__file__).resolve().parents[1] / "config" / "persona.default.toml"
+_REPO_DEFAULT_STICKERS = Path(__file__).resolve().parents[1] / "config" / "stickers.toml"
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -74,12 +76,20 @@ def _resolve_config_from_args(args: argparse.Namespace) -> AgentConfig:
         and _REPO_DEFAULT_PERSONA.exists()
     ):
         cfg.persona_path = _REPO_DEFAULT_PERSONA
+    if (
+        cfg.stickers_manifest_path == Path("config/stickers.toml")
+        and not cfg.stickers_manifest_path.exists()
+        and _REPO_DEFAULT_STICKERS.exists()
+    ):
+        cfg.stickers_manifest_path = _REPO_DEFAULT_STICKERS
     return cfg
 
 
 def _run_dry_check(cfg: AgentConfig) -> int:
     persona = PersonaManager(cfg.persona_path)
     p_cfg = persona.current()
+    stickers = StickerRegistry(cfg.stickers_dir, manifest_path=cfg.stickers_manifest_path)
+    sticker_count = len(stickers.available_entries())
 
     if cfg.data_dir.exists():
         with (
@@ -149,7 +159,8 @@ def _run_dry_check(cfg: AgentConfig) -> int:
         f"管理员数量 : {len(cfg.admin_user_ids)}\n"
         f"群聊白名单 : {groups_desc}\n"
         f"当前人设   : {p_cfg.name}（别名: {aliases_desc} | 文件: {cfg.persona_path}）\n"
-        f"LLM 接口   : {cfg.llm_base_url} (model={cfg.llm_model}, API Key={key_status})\n"
+        f"表情包图库 : 已就绪 {sticker_count} 张（目录: {cfg.stickers_dir}）\n"
+        f"LLM 接口   : {cfg.llm_base_url} (model={cfg.llm_model}, thinking={'ON' if cfg.llm_enable_thinking else 'OFF'}, vision={'ON' if cfg.enable_vision else 'OFF'}, API Key={key_status})\n"
         f"SQLite 护栏: {sqlite_desc} | 当日调用 {snap.calls_used}/{snap.max_daily_calls}"
     )
     print(summary, flush=True)
@@ -166,6 +177,7 @@ async def run_runtime(
 
     async with AsyncExitStack() as stack:
         persona = PersonaManager(cfg.persona_path)
+        stickers = StickerRegistry(cfg.stickers_dir, manifest_path=cfg.stickers_manifest_path)
         sessions = stack.enter_context(SessionStore(cfg.sessions_db_path))
         guardrails = stack.enter_context(
             GuardrailManager(
@@ -186,6 +198,7 @@ async def run_runtime(
                 api_key=cfg.llm_api_key,
                 base_url=cfg.llm_base_url,
                 default_model=cfg.llm_model,
+                enable_thinking=cfg.llm_enable_thinking,
             )
         )
 
@@ -212,6 +225,8 @@ async def run_runtime(
             sessions=sessions,
             trigger=trigger,
             guardrails=guardrails,
+            stickers=stickers,
+            enable_vision=cfg.enable_vision,
             bot_qq=cfg.bot_qq,
             admin_user_ids=cfg.admin_user_ids,
         )
@@ -222,13 +237,17 @@ async def run_runtime(
             access_token=cfg.napcat_access_token,
             auto_approve_friend_ids=cfg.admin_user_ids,
             auto_approve_group_ids=cfg.allowed_group_ids,
+            stickers=stickers,
         )
 
         logger.info(
-            "qq-agent runtime ready (mode=%s, ws=%s, model=%s, admins=%d, groups=%s)",
+            "qq-agent runtime ready (mode=%s, ws=%s, model=%s, thinking=%s, vision=%s, stickers=%d, admins=%d, groups=%s)",
             cfg.mode,
             cfg.napcat_ws_url,
             cfg.llm_model,
+            "on" if cfg.llm_enable_thinking else "off",
+            "on" if cfg.enable_vision else "off",
+            len(stickers.available_entries()),
             len(cfg.admin_user_ids),
             sorted(cfg.allowed_group_ids) if cfg.allowed_group_ids else "ALL",
         )

@@ -810,7 +810,7 @@ def test_e2e_cli_run_runtime_persona_reload_and_soft_budget_downgrade(tmp_path: 
                         "self_id": 999,
                         "user_id": 10011,
                         "group_id": 80001,
-                        "raw_message": "阿橘今天状态怎么样",
+                        "raw_message": "UD今天状态怎么样",
                     }
                 )
                 act1 = await asyncio.wait_for(recv_q.get(), timeout=5.0)
@@ -819,8 +819,8 @@ def test_e2e_cli_run_runtime_persona_reload_and_soft_budget_downgrade(tmp_path: 
                 # 2) Edit persona TOML & run admin `/reload` -> hot-updates wake keyword to "阿柴"
                 persona_file.write_text(
                     persona_file.read_text(encoding="utf-8")
-                    .replace('name = "阿橘"', 'name = "阿柴"')
-                    .replace('aliases = ["橘子", "小橘", "阿橘bot"]', 'aliases = ["柴柴"]'),
+                    .replace('name = "UD"', 'name = "阿柴"')
+                    .replace('aliases = ["ud"]', 'aliases = ["柴柴"]'),
                     encoding="utf-8",
                 )
                 await push_q.put(

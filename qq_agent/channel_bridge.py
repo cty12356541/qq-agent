@@ -17,7 +17,8 @@ from typing import Any, Callable, Generic, Protocol, TypeVar, runtime_checkable
 
 import websockets
 
-from .ob11 import build_send_action, event_to_inbound
+from .ob11 import build_send_action, build_send_actions, event_to_inbound
+from .stickers import StickerRegistry
 from .types import InboundMessage, OutboundReply
 
 logger = logging.getLogger(__name__)
@@ -341,6 +342,8 @@ class NapCatWsAdapter:
         access_token: str | None = None,
         auto_approve_friend_ids: set[int] | None = None,
         auto_approve_group_ids: set[int] | None = None,
+        stickers: StickerRegistry | None = None,
+        sticker_delay_s: float = 0.25,
         poll_interval_s: float = 0.05,
         reconnect_delay_s: float = 1.0,
     ) -> None:
@@ -354,6 +357,9 @@ class NapCatWsAdapter:
         self._auto_approve_group_ids: set[int] = (
             set(auto_approve_group_ids) if auto_approve_group_ids else set()
         )
+        self._stickers = stickers
+        self._sticker_delay_s = max(0.0, float(sticker_delay_s))
+        self._seen_request_flags: deque[str] = deque(maxlen=128)
         self._poll_interval_s = max(0.001, float(poll_interval_s))
         self._reconnect_delay_s = max(0.0, float(reconnect_delay_s))
 
@@ -367,7 +373,7 @@ class NapCatWsAdapter:
 
     async def _maybe_auto_approve_request(self, ws: Any, data: dict[str, Any]) -> None:
         flag = data.get("flag")
-        if not isinstance(flag, str) or not flag:
+        if not isinstance(flag, str) or not flag or flag in self._seen_request_flags:
             return
         req_type = data.get("request_type")
         try:
@@ -376,6 +382,7 @@ class NapCatWsAdapter:
             uid = 0
 
         if req_type == "friend" and uid in self._auto_approve_friend_ids:
+            self._seen_request_flags.append(flag)
             action = {
                 "action": "set_friend_add_request",
                 "params": {"flag": flag, "approve": True},
@@ -391,6 +398,7 @@ class NapCatWsAdapter:
             except (TypeError, ValueError):
                 gid = 0
             if gid in self._auto_approve_group_ids or uid in self._auto_approve_friend_ids:
+                self._seen_request_flags.append(flag)
                 action = {
                     "action": "set_group_add_request",
                     "params": {"flag": flag, "sub_type": "invite", "approve": True},
@@ -433,8 +441,20 @@ class NapCatWsAdapter:
                     if session_stop.is_set():
                         return
                     echo = reply.correlation_id or None
-                    action = build_send_action(reply, echo=echo)
-                    await ws.send(json.dumps(action, ensure_ascii=False))
+                    sticker_uri = (
+                        self._stickers.read_base64_uri(reply.sticker_id)
+                        if (reply.sticker_id and self._stickers is not None)
+                        else None
+                    )
+                    actions = build_send_actions(
+                        reply,
+                        sticker_file=sticker_uri,
+                        echo=echo,
+                    )
+                    for idx, action in enumerate(actions):
+                        if idx > 0 and self._sticker_delay_s > 0:
+                            await asyncio.sleep(self._sticker_delay_s)
+                        await ws.send(json.dumps(action, ensure_ascii=False))
                     await self._bus.ack_outbound(seq)
             else:
                 try:
@@ -451,7 +471,7 @@ class NapCatWsAdapter:
         stop_event: asyncio.Event | None = None,
     ) -> bool:
         """运行单次 WS 会话，返回是否成功完成过连接握手。"""
-        connect_kwargs: dict[str, Any] = {}
+        connect_kwargs: dict[str, Any] = {"max_size": 16 * 1024 * 1024}
         if self._access_token:
             connect_kwargs["additional_headers"] = {
                 "Authorization": f"Bearer {self._access_token}"

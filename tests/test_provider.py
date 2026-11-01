@@ -308,6 +308,7 @@ def test_anthropic_compat_messages_endpoint_and_thinking_block_filtering():
         body = json.loads(req.content.decode("utf-8"))
         assert body["model"] == "glm-5.3"
         assert body["system"] == "你是小助"
+        assert body["thinking"] == {"type": "disabled"}
         assert body["messages"] == [{"role": "user", "content": "在吗？"}]
 
         assert res.content == "在呢！今晚一起开黑呀~"
@@ -316,5 +317,68 @@ def test_anthropic_compat_messages_endpoint_and_thinking_block_filtering():
         assert res.completion_tokens == 250
         assert res.total_tokens == 450
         assert res.cost_micros_usd == estimate_cost_micros("glm-5.3", 200, 250)
+
+    asyncio.run(run())
+
+
+def test_multimodal_vision_messages_and_thinking_toggle():
+    captured_bodies: list[dict[str, Any]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured_bodies.append(json.loads(request.content.decode("utf-8")))
+        return httpx.Response(
+            200,
+            json={
+                "id": "msg_vision_01",
+                "type": "message",
+                "role": "assistant",
+                "model": "glm-5.3-flash",
+                "content": [{"type": "text", "text": "看到奶蛙问号图了"}],
+                "usage": {"input_tokens": 300, "output_tokens": 20},
+            },
+        )
+
+    async def run() -> None:
+        async with OpenAICompatProvider(
+            api_key="glm-pool-token",
+            base_url="http://127.0.0.1:15722/api/anthropic",
+            default_model="glm-5.3-flash",
+            enable_thinking=False,
+            transport=httpx.MockTransport(handler),
+        ) as provider:
+            res = await provider.chat(
+                [
+                    ChatMessage(
+                        role="user",
+                        content="看看这张图",
+                        images=(("image/jpeg", "ZmFrZS1qcGVn"),),
+                    )
+                ]
+            )
+            assert res.content == "看到奶蛙问号图了"
+            # Override enable_thinking=True omits disabled block
+            await provider.chat(
+                [ChatMessage(role="user", content="深思一下")],
+                enable_thinking=True,
+            )
+
+        assert captured_bodies[0]["thinking"] == {"type": "disabled"}
+        assert captured_bodies[0]["messages"] == [
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "image",
+                        "source": {
+                            "type": "base64",
+                            "media_type": "image/jpeg",
+                            "data": "ZmFrZS1qcGVn",
+                        },
+                    },
+                    {"type": "text", "text": "看看这张图"},
+                ],
+            }
+        ]
+        assert "thinking" not in captured_bodies[1]
 
     asyncio.run(run())

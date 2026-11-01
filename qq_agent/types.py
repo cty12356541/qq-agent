@@ -25,6 +25,7 @@ class InboundMessage:
     reply_to_id: int | None = None
     self_id: int | None = None
     timestamp: int = 0
+    image_urls: tuple[str, ...] = ()
 
     @property
     def session_key(self) -> str:
@@ -33,7 +34,9 @@ class InboundMessage:
         return f"private:{self.user_id}"
 
     def to_json_bytes(self) -> bytes:
-        return json.dumps(asdict(self), ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+        payload = asdict(self)
+        payload["image_urls"] = list(self.image_urls)
+        return json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
 
     @classmethod
     def from_json_bytes(cls, raw: bytes) -> InboundMessage:
@@ -42,6 +45,12 @@ class InboundMessage:
         group_raw = data.get("group_id")
         reply_raw = data.get("reply_to_id")
         self_raw = data.get("self_id")
+        raw_imgs = data.get("image_urls")
+        image_urls = (
+            tuple(str(u) for u in raw_imgs if isinstance(u, str) and u.strip())
+            if isinstance(raw_imgs, list)
+            else ()
+        )
         return cls(
             event_id=str(data["event_id"]),
             chat_type=chat_type,
@@ -54,6 +63,7 @@ class InboundMessage:
             reply_to_id=int(reply_raw) if reply_raw is not None else None,
             self_id=int(self_raw) if self_raw is not None else None,
             timestamp=int(data.get("timestamp", 0)),
+            image_urls=image_urls,
         )
 
 
@@ -67,6 +77,7 @@ class OutboundReply:
     reply_to_message_id: int | None = None
     at_user_id: int | None = None
     correlation_id: str = ""
+    sticker_id: str | None = None
 
     def to_json_bytes(self) -> bytes:
         return json.dumps(asdict(self), ensure_ascii=False, separators=(",", ":")).encode("utf-8")
@@ -77,6 +88,12 @@ class OutboundReply:
         chat_type: ChatType = "group" if data.get("chat_type") == "group" else "private"
         reply_raw = data.get("reply_to_message_id")
         at_raw = data.get("at_user_id")
+        sticker_raw = data.get("sticker_id")
+        sticker_id = (
+            str(sticker_raw).strip()
+            if isinstance(sticker_raw, str) and sticker_raw.strip()
+            else None
+        )
         return cls(
             chat_type=chat_type,
             target_id=int(data["target_id"]),
@@ -84,16 +101,18 @@ class OutboundReply:
             reply_to_message_id=int(reply_raw) if reply_raw is not None else None,
             at_user_id=int(at_raw) if at_raw is not None else None,
             correlation_id=str(data.get("correlation_id", "")),
+            sticker_id=sticker_id,
         )
 
 
 @dataclass(slots=True, frozen=True)
 class ChatMessage:
-    """Single message turn inside an LLM conversation window."""
+    """Single message turn inside an LLM conversation window (with optional base64 images)."""
 
     role: MessageRole
     content: str
     created_at: float = 0.0
+    images: tuple[tuple[str, str], ...] = ()  # tuple of (media_type, base64_data)
 
 
 @dataclass(slots=True, frozen=True)

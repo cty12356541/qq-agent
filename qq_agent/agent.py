@@ -15,8 +15,9 @@ from .channel_bridge import MessageBus
 from .commands import AdminCommandRouter
 from .guardrails import GuardrailManager
 from .persona import PersonaConfig, PersonaManager
-from .provider import LLMProvider, ProviderError
+from .provider import LLMProvider, ProviderError, fetch_vision_images
 from .session import SessionStore
+from .stickers import StickerRegistry
 from .trigger import RuleTrigger
 from .types import ChatMessage, InboundMessage, OutboundReply
 
@@ -233,10 +234,13 @@ class AgentKernel:
         sessions: SessionStore,
         trigger: RuleTrigger,
         guardrails: GuardrailManager,
+        stickers: StickerRegistry | None = None,
+        enable_vision: bool = True,
+        vision_transport: Any | None = None,
         commands: AdminCommandRouter | None = None,
         bot_qq: int | None = None,
         admin_user_ids: set[int] | None = None,
-        error_fallback_reply: str = "刚刚脑子卡壳了一下，稍后再试叭~",
+        error_fallback_reply: str = "刚卡了一下，再发一遍",
     ) -> None:
         self.bus = bus
         self.provider = provider
@@ -244,6 +248,9 @@ class AgentKernel:
         self.sessions = sessions
         self.trigger = trigger
         self.guardrails = guardrails
+        self.stickers = stickers
+        self.enable_vision = bool(enable_vision)
+        self._vision_transport = vision_transport
         self.error_fallback_reply = error_fallback_reply
 
         effective_bot_qq = bot_qq if bot_qq is not None else self.trigger.bot_qq
@@ -271,10 +278,17 @@ class AgentKernel:
     def _reload_and_sync_persona(self) -> str:
         cfg = self.persona.reload()
         self._sync_persona(cfg)
+        if self.stickers is not None:
+            self.stickers.reload()
         return cfg.name
 
     @staticmethod
-    def _build_outbound_reply(msg: InboundMessage, text: str) -> OutboundReply | None:
+    def _build_outbound_reply(
+        msg: InboundMessage,
+        text: str,
+        *,
+        sticker_id: str | None = None,
+    ) -> OutboundReply | None:
         if msg.chat_type == "group":
             if msg.group_id is None:
                 return None
@@ -286,6 +300,7 @@ class AgentKernel:
                 reply_to_message_id=reply_to_id,
                 at_user_id=msg.user_id,
                 correlation_id=msg.event_id,
+                sticker_id=sticker_id,
             )
         return OutboundReply(
             chat_type="private",
@@ -294,6 +309,7 @@ class AgentKernel:
             reply_to_message_id=None,
             at_user_id=None,
             correlation_id=msg.event_id,
+            sticker_id=sticker_id,
         )
 
     async def handle_inbound(self, msg: InboundMessage) -> OutboundReply | None:
@@ -336,14 +352,31 @@ class AgentKernel:
                 return self._build_outbound_reply(msg, guard.refusal_reply)
             return None
 
-        # 7) Assemble anti-injection prompt window and invoke LLM provider
-        sys_msg = ChatMessage(role="system", content=self.persona.render_system_prompt())
+        # 7) Assemble anti-injection prompt window (+ sticker guide + multimodal vision) and invoke LLM
+        sys_prompt = self.persona.render_system_prompt()
+        if self.stickers is not None:
+            sticker_guide = self.stickers.render_prompt_guide()
+            if sticker_guide:
+                sys_prompt = f"{sys_prompt}\n\n{sticker_guide}"
+
+        sys_msg = ChatMessage(role="system", content=sys_prompt)
         history = self.sessions.get_window(msg.session_key)
         wrapped_user = self.persona.wrap_user_message(msg, clean_text=trig.clean_text)
 
+        vision_images: tuple[tuple[str, str], ...] = ()
+        if self.enable_vision and msg.image_urls:
+            vision_images = await fetch_vision_images(
+                msg.image_urls,
+                transport=self._vision_transport,
+            )
+
         try:
             res = await self.provider.chat(
-                [sys_msg, *history, ChatMessage(role="user", content=wrapped_user)],
+                [
+                    sys_msg,
+                    *history,
+                    ChatMessage(role="user", content=wrapped_user, images=vision_images),
+                ],
                 model=guard.override_model,
             )
         except ProviderError as exc:
@@ -361,9 +394,24 @@ class AgentKernel:
             total_tokens=res.total_tokens,
             cost_micros_usd=res.cost_micros_usd,
         )
+
+        sticker_id: str | None = None
+        if self.stickers is not None:
+            clean_reply, sticker_id = self.stickers.extract_from_reply(res.content)
+        else:
+            clean_reply = res.content.strip()
+
+        if not clean_reply and sticker_id is None:
+            clean_reply = res.content.strip() or self.error_fallback_reply
+
+        history_assistant = (
+            f"{clean_reply} [[sticker:{sticker_id}]]".strip()
+            if sticker_id is not None
+            else clean_reply
+        )
         self.sessions.append(msg.session_key, "user", wrapped_user)
-        self.sessions.append(msg.session_key, "assistant", res.content)
-        return self._build_outbound_reply(msg, res.content)
+        self.sessions.append(msg.session_key, "assistant", history_assistant)
+        return self._build_outbound_reply(msg, clean_reply, sticker_id=sticker_id)
 
     async def process_once(self, limit: int = 16) -> int:
         """Poll up to `limit` inbound messages, handle & publish replies, and monotonically ACK."""
