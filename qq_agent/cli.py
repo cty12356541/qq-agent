@@ -220,6 +220,17 @@ async def run_runtime(
             bus,
             bot_qq=cfg.bot_qq,
             access_token=cfg.napcat_access_token,
+            auto_approve_friend_ids=cfg.admin_user_ids,
+            auto_approve_group_ids=cfg.allowed_group_ids,
+        )
+
+        logger.info(
+            "qq-agent runtime ready (mode=%s, ws=%s, model=%s, admins=%d, groups=%s)",
+            cfg.mode,
+            cfg.napcat_ws_url,
+            cfg.llm_model,
+            len(cfg.admin_user_ids),
+            sorted(cfg.allowed_group_ids) if cfg.allowed_group_ids else "ALL",
         )
 
         adapter_task = asyncio.create_task(adapter.run_forever(stop_event=effective_stop))
@@ -245,6 +256,9 @@ async def run_runtime(
                 if not task.done():
                     task.cancel()
             await asyncio.gather(*tasks, return_exceptions=True)
+
+
+logger = logging.getLogger(__name__)
 
 
 def main(argv: Sequence[str] | None = None) -> int:

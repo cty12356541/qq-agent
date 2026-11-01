@@ -1,4 +1,4 @@
-"""Async OpenAI-compatible LLM provider with retry, micro-USD accounting, and secret redaction."""
+"""Async OpenAI-compatible & Anthropic-compatible LLM provider with retry, micro-USD accounting, and secret redaction."""
 
 from __future__ import annotations
 
@@ -49,6 +49,8 @@ class ModelPricing:
 DEFAULT_MODEL_PRICING: dict[str, ModelPricing] = {
     "deepseek-chat": ModelPricing(input_micros_per_1m=270_000, output_micros_per_1m=1_100_000),
     "deepseek-reasoner": ModelPricing(input_micros_per_1m=550_000, output_micros_per_1m=2_190_000),
+    "glm-5.3-flash": ModelPricing(input_micros_per_1m=100_000, output_micros_per_1m=400_000),
+    "glm-5.3": ModelPricing(input_micros_per_1m=1_400_000, output_micros_per_1m=4_400_000),
     "glm-4-flash": ModelPricing(input_micros_per_1m=15_000, output_micros_per_1m=15_000),
     "glm-4-air": ModelPricing(input_micros_per_1m=70_000, output_micros_per_1m=70_000),
     "glm-4-plus": ModelPricing(input_micros_per_1m=700_000, output_micros_per_1m=700_000),
@@ -134,7 +136,7 @@ class LLMProvider(Protocol):
 
 
 class OpenAICompatProvider:
-    """Async chat completion client for OpenAI-compatible endpoints (DeepSeek, GLM, Ollama, etc.)."""
+    """Async chat completion client for OpenAI-compatible and Anthropic-compatible (`/v1/messages`) endpoints."""
 
     def __init__(
         self,
@@ -142,7 +144,7 @@ class OpenAICompatProvider:
         api_key: str,
         base_url: str = "https://api.deepseek.com/v1",
         default_model: str = "deepseek-chat",
-        timeout_s: float = 30.0,
+        timeout_s: float = 90.0,
         max_retries: int = 2,
         transport: httpx.AsyncBaseTransport | None = None,
         retry_base_delay_s: float = 0.15,
@@ -152,6 +154,8 @@ class OpenAICompatProvider:
         self._default_model = default_model
         self._max_retries = max(0, int(max_retries))
         self._retry_base_delay_s = max(0.0, float(retry_base_delay_s))
+        lower_url = self._base_url.lower()
+        self._is_anthropic = ("/anthropic" in lower_url) or ("api.anthropic.com" in lower_url)
         self._client = httpx.AsyncClient(
             timeout=httpx.Timeout(timeout_s),
             transport=transport,
@@ -173,26 +177,63 @@ class OpenAICompatProvider:
         """Close the underlying httpx.AsyncClient."""
         await self._client.aclose()
 
+    @staticmethod
+    def _normalize_model_name(name: str) -> str:
+        stripped = name.strip()
+        if stripped.endswith("[1m]") and len(stripped) > 4:
+            return stripped[:-4]
+        return stripped
+
     async def chat(
         self,
         messages: Sequence[ChatMessage],
         *,
         model: str | None = None,
         temperature: float = 0.7,
-        max_tokens: int = 1024,
+        max_tokens: int = 2048,
     ) -> ChatResult:
-        target_model = model or self._default_model
-        url = f"{self._base_url}/chat/completions"
-        headers: dict[str, str] = {"Content-Type": "application/json"}
-        if self._api_key:
-            headers["Authorization"] = f"Bearer {self._api_key}"
+        raw_model = model or self._default_model
+        target_model = (
+            self._normalize_model_name(raw_model) if self._is_anthropic else raw_model
+        )
 
-        payload: dict[str, Any] = {
-            "model": target_model,
-            "messages": [{"role": m.role, "content": m.content} for m in messages],
-            "temperature": temperature,
-            "max_tokens": max_tokens,
-        }
+        headers: dict[str, str] = {"Content-Type": "application/json"}
+        if self._is_anthropic:
+            url = (
+                f"{self._base_url}/messages"
+                if self._base_url.endswith("/v1")
+                else f"{self._base_url}/v1/messages"
+            )
+            headers["anthropic-version"] = "2023-06-01"
+            if self._api_key:
+                headers["x-api-key"] = self._api_key
+                headers["Authorization"] = f"Bearer {self._api_key}"
+            sys_parts = [m.content for m in messages if m.role == "system" and m.content]
+            conv_msgs = [
+                {"role": m.role, "content": m.content}
+                for m in messages
+                if m.role != "system"
+            ]
+            if not conv_msgs:
+                conv_msgs = [{"role": "user", "content": ""}]
+            payload: dict[str, Any] = {
+                "model": target_model,
+                "messages": conv_msgs,
+                "temperature": temperature,
+                "max_tokens": max_tokens,
+            }
+            if sys_parts:
+                payload["system"] = "\n\n".join(sys_parts)
+        else:
+            url = f"{self._base_url}/chat/completions"
+            if self._api_key:
+                headers["Authorization"] = f"Bearer {self._api_key}"
+            payload = {
+                "model": target_model,
+                "messages": [{"role": m.role, "content": m.content} for m in messages],
+                "temperature": temperature,
+                "max_tokens": max_tokens,
+            }
 
         max_attempts = 1 + self._max_retries
         start_perf = time.perf_counter()
@@ -247,30 +288,50 @@ class OpenAICompatProvider:
                 status_code=response.status_code,
             )
 
-        choices = data.get("choices")
-        if not isinstance(choices, list) or not choices:
-            raise ProviderError(
-                "Malformed completion payload: missing non-empty 'choices'",
-                status_code=response.status_code,
-            )
-
-        first_choice = choices[0] if isinstance(choices[0], dict) else {}
-        message_obj = first_choice.get("message") if isinstance(first_choice, dict) else {}
-        if not isinstance(message_obj, dict):
-            raise ProviderError(
-                "Malformed completion payload: missing 'choices[0].message'",
-                status_code=response.status_code,
-            )
-
-        raw_content = message_obj.get("content")
-        content = "" if raw_content is None else str(raw_content)
         resolved_model = str(data.get("model") or target_model)
-
         usage_obj = data.get("usage")
         usage = usage_obj if isinstance(usage_obj, dict) else {}
-        prompt_tokens = int(usage.get("prompt_tokens") or 0)
-        completion_tokens = int(usage.get("completion_tokens") or 0)
-        total_tokens = int(usage.get("total_tokens") or (prompt_tokens + completion_tokens))
+
+        if self._is_anthropic:
+            blocks = data.get("content")
+            if not isinstance(blocks, list) or not blocks:
+                raise ProviderError(
+                    "Malformed Anthropic payload: missing non-empty 'content' array",
+                    status_code=response.status_code,
+                )
+            text_parts = [
+                str(b.get("text") or "")
+                for b in blocks
+                if isinstance(b, dict) and b.get("type") == "text"
+            ]
+            content = "".join(text_parts).strip()
+            prompt_tokens = int(usage.get("input_tokens") or 0) + int(
+                usage.get("cache_read_input_tokens") or 0
+            )
+            completion_tokens = int(usage.get("output_tokens") or 0)
+            total_tokens = int(usage.get("total_tokens") or (prompt_tokens + completion_tokens))
+        else:
+            choices = data.get("choices")
+            if not isinstance(choices, list) or not choices:
+                raise ProviderError(
+                    "Malformed completion payload: missing non-empty 'choices'",
+                    status_code=response.status_code,
+                )
+
+            first_choice = choices[0] if isinstance(choices[0], dict) else {}
+            message_obj = first_choice.get("message") if isinstance(first_choice, dict) else {}
+            if not isinstance(message_obj, dict):
+                raise ProviderError(
+                    "Malformed completion payload: missing 'choices[0].message'",
+                    status_code=response.status_code,
+                )
+
+            raw_content = message_obj.get("content")
+            content = "" if raw_content is None else str(raw_content)
+            prompt_tokens = int(usage.get("prompt_tokens") or 0)
+            completion_tokens = int(usage.get("completion_tokens") or 0)
+            total_tokens = int(usage.get("total_tokens") or (prompt_tokens + completion_tokens))
+
         cost_micros = estimate_cost_micros(resolved_model, prompt_tokens, completion_tokens)
 
         return ChatResult(

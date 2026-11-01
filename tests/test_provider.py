@@ -260,3 +260,61 @@ def test_503_exhausts_retries_and_400_403_fail_fast():
                 assert exc_fast.value.status_code == code
 
     asyncio.run(run())
+
+
+def test_anthropic_compat_messages_endpoint_and_thinking_block_filtering():
+    captured_requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured_requests.append(request)
+        return httpx.Response(
+            200,
+            json={
+                "id": "msg_glm_pool_001",
+                "type": "message",
+                "role": "assistant",
+                "model": "glm-5.3",
+                "content": [
+                    {"type": "thinking", "thinking": "Internal reasoning should not leak to QQ chat."},
+                    {"type": "text", "text": "在呢！今晚一起开黑呀~"},
+                ],
+                "usage": {
+                    "input_tokens": 120,
+                    "cache_read_input_tokens": 80,
+                    "output_tokens": 250,
+                },
+            },
+        )
+
+    async def run() -> None:
+        async with OpenAICompatProvider(
+            api_key="glm-pool-token",
+            base_url="http://127.0.0.1:15722/api/anthropic",
+            default_model="glm-5.3[1m]",
+            transport=httpx.MockTransport(handler),
+        ) as provider:
+            res = await provider.chat(
+                [
+                    ChatMessage(role="system", content="你是小助"),
+                    ChatMessage(role="user", content="在吗？"),
+                ]
+            )
+
+        assert len(captured_requests) == 1
+        req = captured_requests[0]
+        assert str(req.url) == "http://127.0.0.1:15722/api/anthropic/v1/messages"
+        assert req.headers["x-api-key"] == "glm-pool-token"
+        assert req.headers["anthropic-version"] == "2023-06-01"
+        body = json.loads(req.content.decode("utf-8"))
+        assert body["model"] == "glm-5.3"
+        assert body["system"] == "你是小助"
+        assert body["messages"] == [{"role": "user", "content": "在吗？"}]
+
+        assert res.content == "在呢！今晚一起开黑呀~"
+        assert "Internal reasoning" not in res.content
+        assert res.prompt_tokens == 200
+        assert res.completion_tokens == 250
+        assert res.total_tokens == 450
+        assert res.cost_micros_usd == estimate_cost_micros("glm-5.3", 200, 250)
+
+    asyncio.run(run())

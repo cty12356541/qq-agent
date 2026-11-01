@@ -23,6 +23,7 @@ from .types import ChatMessage, InboundMessage, OutboundReply
 logger = logging.getLogger(__name__)
 
 _ENDPOINT_SEQ = 0
+_REPO_ROOT = Path(__file__).resolve().parents[1]
 
 
 def _make_ipc_endpoint(label: str) -> str:
@@ -42,11 +43,10 @@ def resolve_daemon_command(
     auth_endpoint: str,
     plain_endpoint: str,
 ) -> tuple[list[str], str]:
-    """Prefer `<llmos_root>/target/debug/system-control-daemon[.exe]`; fallback to `cargo run`."""
+    """Prefer prebuilt `system-control-daemon[.exe]` binary; fallback to `cargo run`."""
     exe_name = (
         "system-control-daemon.exe" if sys.platform == "win32" else "system-control-daemon"
     )
-    prebuilt = llmos_root / "target" / "debug" / exe_name
     daemon_args = [
         "--root",
         str(root_dir),
@@ -55,8 +55,15 @@ def resolve_daemon_command(
         "--plain-socket",
         plain_endpoint,
     ]
-    if prebuilt.exists():
-        return [str(prebuilt), *daemon_args], f"prebuilt ({prebuilt})"
+    candidates = (
+        llmos_root / "target" / "debug" / exe_name,
+        llmos_root / "target" / "release" / exe_name,
+        _REPO_ROOT / "data" / "bin" / exe_name,
+        Path(tempfile.gettempdir()) / "qq-agent-llmos-target" / "debug" / exe_name,
+    )
+    for prebuilt in candidates:
+        if prebuilt.exists():
+            return [str(prebuilt), *daemon_args], f"prebuilt ({prebuilt})"
 
     cargo_cmd = ["cargo", "run", "--quiet"]
     if (llmos_root / "Cargo.lock").exists():

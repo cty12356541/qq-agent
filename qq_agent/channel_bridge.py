@@ -7,6 +7,7 @@ import asyncio
 import hashlib
 import inspect
 import json
+import logging
 import secrets
 import sys
 from collections import deque
@@ -18,6 +19,8 @@ import websockets
 
 from .ob11 import build_send_action, event_to_inbound
 from .types import InboundMessage, OutboundReply
+
+logger = logging.getLogger(__name__)
 
 T = TypeVar("T")
 
@@ -336,6 +339,8 @@ class NapCatWsAdapter:
         *,
         bot_qq: int | None = None,
         access_token: str | None = None,
+        auto_approve_friend_ids: set[int] | None = None,
+        auto_approve_group_ids: set[int] | None = None,
         poll_interval_s: float = 0.05,
         reconnect_delay_s: float = 1.0,
     ) -> None:
@@ -343,6 +348,12 @@ class NapCatWsAdapter:
         self._bus = bus
         self._bot_qq = bot_qq
         self._access_token = access_token
+        self._auto_approve_friend_ids: set[int] = (
+            set(auto_approve_friend_ids) if auto_approve_friend_ids else set()
+        )
+        self._auto_approve_group_ids: set[int] = (
+            set(auto_approve_group_ids) if auto_approve_group_ids else set()
+        )
         self._poll_interval_s = max(0.001, float(poll_interval_s))
         self._reconnect_delay_s = max(0.0, float(reconnect_delay_s))
 
@@ -353,6 +364,40 @@ class NapCatWsAdapter:
     @property
     def bus(self) -> MessageBus:
         return self._bus
+
+    async def _maybe_auto_approve_request(self, ws: Any, data: dict[str, Any]) -> None:
+        flag = data.get("flag")
+        if not isinstance(flag, str) or not flag:
+            return
+        req_type = data.get("request_type")
+        try:
+            uid = int(data.get("user_id") or 0)
+        except (TypeError, ValueError):
+            uid = 0
+
+        if req_type == "friend" and uid in self._auto_approve_friend_ids:
+            action = {
+                "action": "set_friend_add_request",
+                "params": {"flag": flag, "approve": True},
+                "echo": f"auto-friend-{flag}",
+            }
+            await ws.send(json.dumps(action, ensure_ascii=False))
+            logger.info("Auto-approved whitelisted admin friend request")
+            return
+
+        if req_type == "group" and data.get("sub_type") == "invite":
+            try:
+                gid = int(data.get("group_id") or 0)
+            except (TypeError, ValueError):
+                gid = 0
+            if gid in self._auto_approve_group_ids or uid in self._auto_approve_friend_ids:
+                action = {
+                    "action": "set_group_add_request",
+                    "params": {"flag": flag, "sub_type": "invite", "approve": True},
+                    "echo": f"auto-group-{flag}",
+                }
+                await ws.send(json.dumps(action, ensure_ascii=False))
+                logger.info("Auto-approved whitelisted group invite")
 
     async def _recv_loop(self, ws: Any, session_stop: asyncio.Event) -> None:
         async for raw in ws:
@@ -369,8 +414,12 @@ class NapCatWsAdapter:
                 continue
             if not isinstance(data, dict):
                 continue
+            post_type = data.get("post_type")
+            if post_type == "request":
+                await self._maybe_auto_approve_request(ws, data)
+                continue
             # Ignore action echo responses (no post_type) and meta_event heartbeats
-            if data.get("post_type") != "message":
+            if post_type != "message":
                 continue
             inbound = event_to_inbound(data, bot_qq=self._bot_qq)
             if inbound is not None:

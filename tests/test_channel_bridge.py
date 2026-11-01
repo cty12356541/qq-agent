@@ -623,3 +623,81 @@ def test_napcat_ws_adapter_run_forever_reconnects_after_drop():
                 await bus.close()
 
     asyncio.run(_run())
+
+
+def test_napcat_ws_adapter_auto_approves_only_whitelisted_friend_and_group_requests():
+    async def _run() -> None:
+        bus = DirectMemoryBus()
+        await bus.start()
+        received_actions: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
+
+        async def fake_napcat(ws: websockets.ServerConnection) -> None:
+            # 1) Stranger friend request -> MUST NOT auto-approve
+            await ws.send(
+                json.dumps(
+                    {
+                        "post_type": "request",
+                        "request_type": "friend",
+                        "user_id": 99999,
+                        "flag": "stranger-flag",
+                    }
+                )
+            )
+            # 2) Whitelisted admin friend request -> MUST auto-approve
+            await ws.send(
+                json.dumps(
+                    {
+                        "post_type": "request",
+                        "request_type": "friend",
+                        "user_id": 10001,
+                        "flag": "admin-friend-flag",
+                    }
+                )
+            )
+            # 3) Whitelisted group invite -> MUST auto-approve
+            await ws.send(
+                json.dumps(
+                    {
+                        "post_type": "request",
+                        "request_type": "group",
+                        "sub_type": "invite",
+                        "group_id": 70001,
+                        "user_id": 88888,
+                        "flag": "group-invite-flag",
+                    }
+                )
+            )
+            async for raw in ws:
+                await received_actions.put(json.loads(raw))
+
+        async with websockets.serve(fake_napcat, "127.0.0.1", 0) as server:
+            port = server.sockets[0].getsockname()[1]
+            adapter = NapCatWsAdapter(
+                f"ws://127.0.0.1:{port}",
+                bus,
+                auto_approve_friend_ids={10001},
+                auto_approve_group_ids={70001},
+                poll_interval_s=0.01,
+            )
+            stop_event = asyncio.Event()
+            task = asyncio.create_task(adapter.run_once_session(stop_event=stop_event))
+            try:
+                act1 = await asyncio.wait_for(received_actions.get(), timeout=3.0)
+                act2 = await asyncio.wait_for(received_actions.get(), timeout=3.0)
+                assert act1 == {
+                    "action": "set_friend_add_request",
+                    "params": {"flag": "admin-friend-flag", "approve": True},
+                    "echo": "auto-friend-admin-friend-flag",
+                }
+                assert act2 == {
+                    "action": "set_group_add_request",
+                    "params": {"flag": "group-invite-flag", "sub_type": "invite", "approve": True},
+                    "echo": "auto-group-group-invite-flag",
+                }
+                assert received_actions.empty()
+            finally:
+                stop_event.set()
+                await asyncio.wait_for(task, timeout=3.0)
+                await bus.close()
+
+    asyncio.run(_run())
