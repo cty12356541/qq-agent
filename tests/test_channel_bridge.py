@@ -482,6 +482,18 @@ def test_napcat_ws_adapter_group_roundtrip_and_auth_with_fake_server():
 
             async for raw in ws:
                 action_data = json.loads(raw)
+                if action_data.get("action") in {"get_msg", "get_forward_msg"}:
+                    await ws.send(
+                        json.dumps(
+                            {
+                                "status": "failed",
+                                "retcode": 1200,
+                                "data": None,
+                                "echo": action_data.get("echo", ""),
+                            }
+                        )
+                    )
+                    continue
                 await received_actions.put(action_data)
                 await ws.send(
                     json.dumps(
