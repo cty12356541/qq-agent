@@ -375,3 +375,73 @@ def test_spawn_subagent_inherits_reply_id_and_cancel_subagent_invokes_callback()
         assert format_tool_result({"ok": True}) == '{"ok": true}'
 
     asyncio.run(_run())
+
+
+def test_send_message_and_fallback_unwrap_nested_or_stringified_bubble_lists() -> None:
+    """Prevent nested lists or stringified Python/JSON string arrays from leaking `['...']` brackets."""
+
+    async def _noop_sleep(_: float) -> None:
+        return None
+
+    async def _run() -> None:
+        bus = DirectMemoryBus()
+        await bus.start()
+
+        # 1) Nested 2D arrays like `[["戳我干嘛", "我人还在床上瘫着）"], ["怎么 有事？"]]`
+        state_nested = ChatTurnState()
+        tool_nested = build_send_message_tool(
+            bus,
+            state_nested,
+            chat_type="group",
+            target_id=700001,
+            sleep_fn=_noop_sleep,
+        )
+        await tool_nested.execute(
+            {
+                "bubbles": [["戳我干嘛", "我人还在床上瘫着）"], ["怎么 有事？"]],
+            }
+        )
+        assert state_nested.sent_bubbles == ["戳我干嘛", "我人还在床上瘫着）", "怎么 有事？"]
+
+        # 2) Stringified Python / JSON lists inside `bubbles`
+        state_str = ChatTurnState()
+        tool_str = build_send_message_tool(
+            bus,
+            state_str,
+            chat_type="group",
+            target_id=700001,
+            sleep_fn=_noop_sleep,
+        )
+        await tool_str.execute(
+            {
+                "bubbles": ["['戳我干嘛', '我人还在床上瘫着）']", '["怎么 有事？"]'],
+            }
+        )
+        assert state_str.sent_bubbles == ["戳我干嘛", "我人还在床上瘫着）", "怎么 有事？"]
+
+        # 3) Legitimate bracketed text (`[图片]`, `[1, 2, 3]`) is NEVER stripped
+        state_legit = ChatTurnState()
+        tool_legit = build_send_message_tool(
+            bus,
+            state_legit,
+            chat_type="group",
+            target_id=700001,
+            sleep_fn=_noop_sleep,
+        )
+        await tool_legit.execute({"bubbles": ["[图片]", "[1, 2, 3]"]})
+        assert state_legit.sent_bubbles == ["[图片]", "[1, 2, 3]"]
+
+        # 4) Fallback plain-text reply also unwraps stringified Python list lines
+        fb_state = ChatTurnState()
+        fb_reply = await flush_fallback_text_reply(
+            bus,
+            fb_state,
+            "['戳我干嘛', '我人还在床上瘫着）']\n['怎么 有事？']",
+            chat_type="group",
+            target_id=700001,
+        )
+        assert fb_reply is not None
+        assert fb_reply.text == "戳我干嘛\n我人还在床上瘫着）\n怎么 有事？"
+
+    asyncio.run(_run())
+

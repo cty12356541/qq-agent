@@ -2,9 +2,12 @@
 
 from __future__ import annotations
 
+import ast
 import asyncio
 from collections.abc import Awaitable, Callable, Collection
 from dataclasses import dataclass, field
+import json
+import re
 from typing import Any
 
 from qq_agent.channel_bridge import MessageBus
@@ -131,6 +134,59 @@ def _parse_optional_message_id(raw_val: Any) -> int | None:
     return None
 
 
+_STRINGIFIED_LIST_PREFIX_RE = re.compile(r"^\[\s*['\"\[]")
+
+
+def _all_leaves_are_strings_or_none(items: Any) -> bool:
+    if isinstance(items, (list, tuple)):
+        return all(_all_leaves_are_strings_or_none(item) for item in items)
+    return items is None or isinstance(items, str)
+
+
+def _try_parse_stringified_bubble_list(raw_text: str) -> list[Any] | None:
+    """Unwrap accidental JSON/Python stringified string lists like `\"['怎么 有事？']\"`."""
+    stripped = raw_text.strip()
+    if not (stripped.endswith("]") and _STRINGIFIED_LIST_PREFIX_RE.match(stripped)):
+        return None
+    for parser in (json.loads, ast.literal_eval):
+        try:
+            parsed = parser(stripped)
+        except Exception:
+            continue
+        if isinstance(parsed, (list, tuple)) and _all_leaves_are_strings_or_none(parsed):
+            return list(parsed)
+    return None
+
+
+def _normalize_bubble_candidates(raw_bubbles: Any) -> list[str]:
+    """Flatten 1D/nested bubble arrays and unwrap stringified Python/JSON string lists."""
+    if raw_bubbles is None:
+        return []
+    if isinstance(raw_bubbles, str):
+        unwrapped = _try_parse_stringified_bubble_list(raw_bubbles)
+        if unwrapped is not None:
+            return _normalize_bubble_candidates(unwrapped)
+        if "\n" in raw_bubbles:
+            lines = [ln.strip() for ln in raw_bubbles.splitlines() if ln.strip()]
+            if lines and all(_try_parse_stringified_bubble_list(ln) is not None for ln in lines):
+                merged: list[str] = []
+                for ln in lines:
+                    merged.extend(_normalize_bubble_candidates(ln))
+                return merged
+        return [raw_bubbles]
+    if isinstance(raw_bubbles, (list, tuple)):
+        flattened: list[str] = []
+        for item in raw_bubbles:
+            if item is None:
+                continue
+            if isinstance(item, (list, tuple, str)):
+                flattened.extend(_normalize_bubble_candidates(item))
+            else:
+                flattened.append(str(item))
+        return flattened
+    raise ToolArgumentError("'bubbles' must be a list of strings (or a single string)")
+
+
 def build_send_message_tool(
     bus: MessageBus,
     turn_state: ChatTurnState,
@@ -156,7 +212,7 @@ def build_send_message_tool(
 
     if compact_schema:
         tool_desc = "向当前会话发送1~3条短句气泡回复。"
-        bubbles_desc = "1~3条短句气泡。"
+        bubbles_desc = "1~3条纯文本短句一维列表(勿嵌套)。"
         sticker_desc = "可选，末条附带的合法表情包ID。"
         reply_desc = "可选，首条引用的目标消息ID。"
     else:
@@ -203,15 +259,7 @@ def build_send_message_tool(
     )
 
     async def _execute(args: dict[str, Any]) -> str:
-        raw_bubbles = args.get("bubbles")
-        if isinstance(raw_bubbles, str):
-            bubble_candidates = [raw_bubbles]
-        elif isinstance(raw_bubbles, (list, tuple)):
-            bubble_candidates = [str(item) for item in raw_bubbles if item is not None]
-        elif raw_bubbles is None:
-            bubble_candidates = []
-        else:
-            raise ToolArgumentError("'bubbles' must be a list of strings (or a single string)")
+        bubble_candidates = _normalize_bubble_candidates(args.get("bubbles"))
 
         allowed_map = _build_allowed_sticker_map(allowed_sticker_ids, stickers)
 
@@ -222,7 +270,15 @@ def build_send_message_tool(
             if extracted_tag and inline_tag_token is None:
                 inline_tag_token = extracted_tag
             normalized = stripped_text.strip()
-            if normalized:
+            if not normalized:
+                continue
+            post_tag_unwrapped = _try_parse_stringified_bubble_list(normalized)
+            if post_tag_unwrapped is not None:
+                for inner in _normalize_bubble_candidates(post_tag_unwrapped):
+                    inner_clean = inner.strip()
+                    if inner_clean:
+                        clean_bubbles.append(inner_clean)
+            else:
                 clean_bubbles.append(normalized)
 
         clean_bubbles = clean_bubbles[:MAX_BUBBLES_PER_SEND]
@@ -382,6 +438,13 @@ async def flush_fallback_text_reply(
             sticker_id = raw_tag_sid
 
     clean_text = clean_text.strip()
+    if clean_text:
+        unwrapped_fallback = [
+            part.strip()
+            for part in _normalize_bubble_candidates(clean_text)
+            if part.strip()
+        ]
+        clean_text = "\n".join(unwrapped_fallback)
     if not clean_text and sticker_id is None:
         return None
 

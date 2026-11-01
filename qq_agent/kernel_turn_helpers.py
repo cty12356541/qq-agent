@@ -50,7 +50,7 @@ _CANCEL_STEER_KEYWORDS: tuple[str, ...] = (
 
 _FAST_BRAIN_TOOL_GUIDE = (
     "【对话与工具使用规范（Use Chat as Tool）】\n"
-    "1. 优先调用 `send_message(bubbles=[...], reply_to_message_id=..., sticker_id=...)` 发言："
+    '1. 优先调用 `send_message(bubbles=["短句1","短句2"], reply_to_message_id=..., sticker_id=...)` 发言：'
     "模仿真实 QQ 群友把回复拆成 1~3 条自然短句气泡，不要发长篇大论或列表排版。\n"
     "2. 若当前处于群聊被动接话/潜伏插话且工具列表中包含 `stay_silent`，当发现群友在私下对话或强行插话显得生硬时，"
     "请直接调用 `stay_silent(reason=...)` 保持安静。\n"
@@ -63,7 +63,7 @@ _FAST_BRAIN_TOOL_GUIDE = (
 )
 
 _FAST_BRAIN_TOOL_GUIDE_COMPACT = (
-    "【工具规范】优先调 `send_message(bubbles=[...], reply_to_message_id=..., sticker_id=...)` 拆 1~3 条短句发言（勿长篇排版）；"
+    '【工具规范】优先调 `send_message(bubbles=["短句1","短句2"], reply_to_message_id=..., sticker_id=...)` 拆 1~3 条短句发言（勿长篇排版）；'
     "被动插话觉生硬就调 `stay_silent`；简单实时事实调 `web_search`（若上方已有已查证资讯可直接参考免重搜），"
     "需深翻多页则同轮发一句口语垫话并调 `spawn_subagent`。"
 )
