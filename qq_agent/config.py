@@ -84,6 +84,18 @@ def _parse_int_with_default(raw: str | None, default: int, field_name: str) -> i
     return default if parsed is None else parsed
 
 
+def _parse_float_with_default(raw: str | None, default: float, field_name: str) -> float:
+    if raw is None:
+        return default
+    stripped = raw.strip()
+    if not stripped:
+        return default
+    try:
+        return float(stripped)
+    except ValueError as exc:
+        raise ValueError(f"Invalid float for {field_name}: {raw!r}") from exc
+
+
 def _parse_bool_with_default(raw: str | None, default: bool, field_name: str) -> bool:
     if raw is None:
         return default
@@ -135,7 +147,17 @@ class AgentConfig:
 
     data_dir: Path = field(default_factory=lambda: Path("data"))
     persona_path: Path = field(default_factory=lambda: Path("config/persona.default.toml"))
+    persona_local_path: Path | None = None
+    personas_dir: Path | None = None
     stickers_manifest_path: Path = field(default_factory=lambda: Path("config/stickers.toml"))
+
+    private_debounce_s: float = 1.8
+    group_debounce_s: float = 1.2
+    group_followup_window_s: float = 60.0
+    group_proactive_prob: float = 0.22
+    group_topic_prob: float = 0.65
+    group_proactive_every_n: int = 6
+    group_proactive_cooldown_s: float = 12.0
 
     daily_max_calls: int = 200
     daily_max_tokens: int = 200_000
@@ -149,12 +171,28 @@ class AgentConfig:
         return self.data_dir / "sessions.sqlite3"
 
     @property
+    def memory_db_path(self) -> Path:
+        return self.data_dir / "memory.sqlite3"
+
+    @property
     def guardrails_db_path(self) -> Path:
         return self.data_dir / "guardrails.sqlite3"
 
     @property
     def stickers_dir(self) -> Path:
         return self.data_dir / "stickers"
+
+    @property
+    def effective_persona_local_path(self) -> Path:
+        if self.persona_local_path is not None:
+            return self.persona_local_path
+        return self.data_dir / "persona.local.toml"
+
+    @property
+    def effective_personas_dir(self) -> Path:
+        if self.personas_dir is not None:
+            return self.personas_dir
+        return self.data_dir / "personas"
 
     @property
     def llmos_daemon_root(self) -> Path:
@@ -203,6 +241,12 @@ class AgentConfig:
         llmos_root_raw = get_optional_str("LLMOS_ROOT")
         llmos_root = Path(llmos_root_raw) if llmos_root_raw is not None else _default_llmos_root()
 
+        persona_local_raw = get_optional_str("QQ_PERSONA_LOCAL_PATH")
+        persona_local_path = Path(persona_local_raw) if persona_local_raw is not None else None
+
+        personas_dir_raw = get_optional_str("QQ_PERSONAS_DIR")
+        personas_dir = Path(personas_dir_raw) if personas_dir_raw is not None else None
+
         api_key_raw = get_raw("LLM_API_KEY")
         llm_api_key = api_key_raw.strip() if api_key_raw is not None else ""
 
@@ -228,8 +272,31 @@ class AgentConfig:
             llmos_plain_endpoint=get_optional_str("LLMOS_PLAIN_ENDPOINT"),
             data_dir=Path(get_nonempty("QQ_DATA_DIR", "data")),
             persona_path=Path(get_nonempty("QQ_PERSONA_PATH", "config/persona.default.toml")),
+            persona_local_path=persona_local_path,
+            personas_dir=personas_dir,
             stickers_manifest_path=Path(
                 get_nonempty("QQ_STICKERS_MANIFEST", "config/stickers.toml")
+            ),
+            private_debounce_s=_parse_float_with_default(
+                get_raw("QQ_PRIVATE_DEBOUNCE_S"), 1.8, "QQ_PRIVATE_DEBOUNCE_S"
+            ),
+            group_debounce_s=_parse_float_with_default(
+                get_raw("QQ_GROUP_DEBOUNCE_S"), 1.2, "QQ_GROUP_DEBOUNCE_S"
+            ),
+            group_followup_window_s=_parse_float_with_default(
+                get_raw("QQ_GROUP_FOLLOWUP_WINDOW_S"), 60.0, "QQ_GROUP_FOLLOWUP_WINDOW_S"
+            ),
+            group_proactive_prob=_parse_float_with_default(
+                get_raw("QQ_GROUP_PROACTIVE_PROB"), 0.22, "QQ_GROUP_PROACTIVE_PROB"
+            ),
+            group_topic_prob=_parse_float_with_default(
+                get_raw("QQ_GROUP_TOPIC_PROB"), 0.65, "QQ_GROUP_TOPIC_PROB"
+            ),
+            group_proactive_every_n=_parse_int_with_default(
+                get_raw("QQ_GROUP_PROACTIVE_EVERY_N"), 6, "QQ_GROUP_PROACTIVE_EVERY_N"
+            ),
+            group_proactive_cooldown_s=_parse_float_with_default(
+                get_raw("QQ_GROUP_PROACTIVE_COOLDOWN_S"), 12.0, "QQ_GROUP_PROACTIVE_COOLDOWN_S"
             ),
             daily_max_calls=_parse_int_with_default(
                 get_raw("QQ_DAILY_MAX_CALLS"), 200, "QQ_DAILY_MAX_CALLS"

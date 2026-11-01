@@ -1,3 +1,4 @@
+from qq_agent.config import AgentConfig
 from qq_agent.types import (
     ChatMessage,
     ChatResult,
@@ -22,23 +23,26 @@ def test_inbound_message_roundtrip_and_session_keys():
         reply_to_id=9000,
         self_id=99999,
         timestamp=1730000000,
+        reply_to_user_id=99999,
+        reply_to_sender_name="UD",
+        reply_to_text="刚上线",
+        mentioned_other=False,
     )
     assert group_msg.session_key == "group:88888"
     encoded = group_msg.to_json_bytes()
     decoded = InboundMessage.from_json_bytes(encoded)
     assert decoded == group_msg
 
-    priv_msg = InboundMessage(
-        event_id="9002",
-        chat_type="private",
-        user_id=12345,
-        group_id=None,
-        sender_name="阿哲",
-        text="在吗",
-        raw_message="在吗",
+    # Backward compatibility with legacy serialized payloads missing M2 reply fields
+    legacy_bytes = (
+        b'{"event_id":"9002","chat_type":"private","user_id":12345,"group_id":null,'
+        b'"sender_name":"A","text":"hi","raw_message":"hi"}'
     )
-    assert priv_msg.session_key == "private:12345"
-    assert InboundMessage.from_json_bytes(priv_msg.to_json_bytes()) == priv_msg
+    legacy_decoded = InboundMessage.from_json_bytes(legacy_bytes)
+    assert legacy_decoded.session_key == "private:12345"
+    assert legacy_decoded.reply_to_user_id is None
+    assert legacy_decoded.reply_to_text == ""
+    assert legacy_decoded.mentioned_other is False
 
 
 def test_outbound_reply_roundtrip():
@@ -53,7 +57,7 @@ def test_outbound_reply_roundtrip():
     assert OutboundReply.from_json_bytes(reply.to_json_bytes()) == reply
 
 
-def test_value_objects_defaults():
+def test_value_objects_and_m2_config_defaults():
     cm = ChatMessage(role="user", content="hello")
     assert cm.role == "user"
     cr = ChatResult(content="hi", model="deepseek-chat", total_tokens=42, cost_micros_usd=120)
@@ -64,3 +68,18 @@ def test_value_objects_defaults():
     assert not gd.allowed
     cmd = CommandResult(handled=True, reply_text="pong", command_name="ping")
     assert cmd.handled
+
+    cfg = AgentConfig.from_env(
+        env_file=None,
+        environ={
+            "QQ_DATA_DIR": "data",
+            "QQ_GROUP_PROACTIVE_PROB": "0.25",
+            "QQ_GROUP_TOPIC_PROB": "0.70",
+            "QQ_GROUP_PROACTIVE_EVERY_N": "5",
+        },
+    )
+    assert cfg.group_proactive_prob == 0.25
+    assert cfg.group_topic_prob == 0.70
+    assert cfg.group_proactive_every_n == 5
+    assert str(cfg.memory_db_path).endswith("memory.sqlite3")
+    assert str(cfg.effective_persona_local_path).endswith("persona.local.toml")

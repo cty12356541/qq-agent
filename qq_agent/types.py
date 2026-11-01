@@ -26,6 +26,10 @@ class InboundMessage:
     self_id: int | None = None
     timestamp: int = 0
     image_urls: tuple[str, ...] = ()
+    reply_to_user_id: int | None = None
+    reply_to_sender_name: str = ""
+    reply_to_text: str = ""
+    mentioned_other: bool = False
 
     @property
     def session_key(self) -> str:
@@ -44,6 +48,7 @@ class InboundMessage:
         chat_type: ChatType = "group" if data.get("chat_type") == "group" else "private"
         group_raw = data.get("group_id")
         reply_raw = data.get("reply_to_id")
+        reply_uid_raw = data.get("reply_to_user_id")
         self_raw = data.get("self_id")
         raw_imgs = data.get("image_urls")
         image_urls = (
@@ -64,6 +69,10 @@ class InboundMessage:
             self_id=int(self_raw) if self_raw is not None else None,
             timestamp=int(data.get("timestamp", 0)),
             image_urls=image_urls,
+            reply_to_user_id=int(reply_uid_raw) if reply_uid_raw is not None else None,
+            reply_to_sender_name=str(data.get("reply_to_sender_name", "")),
+            reply_to_text=str(data.get("reply_to_text", "")),
+            mentioned_other=bool(data.get("mentioned_other", False)),
         )
 
 
