@@ -71,8 +71,8 @@ class SessionStore:
         content: str,
         *,
         created_at: float | None = None,
-    ) -> None:
-        """Append a message turn and prune oldest entries exceeding `max_window` for `session_key`."""
+    ) -> list[ChatMessage]:
+        """Append a message turn, prune oldest entries exceeding `max_window`, and return evicted messages."""
         if role not in _VALID_ROLES:
             raise ValueError(f"Invalid message role: {role!r}")
         ts = time.time() if created_at is None else float(created_at)
@@ -85,9 +85,10 @@ class SessionStore:
                 """,
                 (session_key, role, content, ts),
             )
-            conn.execute(
+            evicted_rows = conn.execute(
                 """
-                DELETE FROM session_messages
+                SELECT id, role, content, created_at
+                FROM session_messages
                 WHERE session_key = ?
                   AND id NOT IN (
                       SELECT id FROM session_messages
@@ -95,13 +96,32 @@ class SessionStore:
                       ORDER BY created_at DESC, id DESC
                       LIMIT ?
                   )
+                ORDER BY created_at ASC, id ASC
                 """,
                 (session_key, session_key, self._max_window),
+            ).fetchall()
+
+            if evicted_rows:
+                placeholders = ",".join("?" for _ in evicted_rows)
+                conn.execute(
+                    f"DELETE FROM session_messages WHERE id IN ({placeholders})",
+                    tuple(int(row[0]) for row in evicted_rows),
+                )
+
+        return [
+            ChatMessage(
+                role=cast(MessageRole, str(row[1])),
+                content=str(row[2]),
+                created_at=float(row[3]),
             )
+            for row in evicted_rows
+        ]
 
     def get_window(self, session_key: str, *, limit: int | None = None) -> list[ChatMessage]:
         """Return the most recent window messages for `session_key` in chronological order."""
-        effective_limit = self._max_window if limit is None else min(self._max_window, max(0, int(limit)))
+        effective_limit = (
+            self._max_window if limit is None else min(self._max_window, max(0, int(limit)))
+        )
         if effective_limit == 0:
             return []
 
