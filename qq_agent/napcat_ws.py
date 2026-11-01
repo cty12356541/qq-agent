@@ -39,7 +39,7 @@ class NapCatWsAdapter:
         bus: MessageBus,
         *,
         bot_qq: int | None = None,
-        bot_name: str = "UD",
+        bot_name: str = "阿橘",
         access_token: str | None = None,
         auto_approve_friend_ids: set[int] | None = None,
         auto_approve_group_ids: set[int] | None = None,
@@ -52,7 +52,7 @@ class NapCatWsAdapter:
         self._ws_url = ws_url
         self._bus = bus
         self._bot_qq = bot_qq
-        self._bot_name: str = str(bot_name).strip() or "UD"
+        self._bot_name: str = str(bot_name).strip() or "阿橘"
         self._access_token = access_token
         self._auto_approve_friend_ids: set[int] = (
             set(auto_approve_friend_ids) if auto_approve_friend_ids else set()
