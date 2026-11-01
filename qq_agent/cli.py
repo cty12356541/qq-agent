@@ -205,14 +205,15 @@ def _run_dry_check(cfg: AgentConfig) -> int:
         f"管理员数量 : {len(cfg.admin_user_ids)}\n"
         f"群聊白名单 : {groups_desc}\n"
         f"当前人设   : {p_cfg.name}（别名: {aliases_desc} | 激活档案: {profile_desc} | 归档库: {archived_desc}）\n"
-        f"快慢双脑   : 快脑 max_steps={cfg.agent_max_steps} (thinking={'ON' if cfg.llm_enable_thinking else 'OFF'}) | "
+        f"快慢双脑   : 快脑 max_steps={cfg.agent_max_steps} (thinking={'ON' if cfg.llm_enable_thinking else 'OFF'}, compact={'ON' if cfg.compact_prompt else 'OFF'}) | "
         f"慢脑={'ON' if cfg.subagent_enabled else 'OFF'} (model={cfg.effective_subagent_model}, "
-        f"thinking={'ON' if cfg.subagent_enable_thinking else 'OFF'}, max_steps={cfg.subagent_max_steps}, timeout={cfg.subagent_timeout_s}s)\n"
-        f"联网搜索   : {'ON' if cfg.web_search_enabled else 'OFF'} ({search_engine_desc}, timeout={cfg.web_search_timeout_s}s)\n"
+        f"thinking={'ON' if cfg.subagent_enable_thinking else 'OFF'}, max_steps={cfg.subagent_max_steps}, "
+        f"concurrency={cfg.subagent_max_concurrent}/per_group={cfg.subagent_max_per_session}, timeout={cfg.subagent_timeout_s}s)\n"
+        f"联网搜索   : {'ON' if cfg.web_search_enabled else 'OFF'} ({search_engine_desc}, timeout={cfg.web_search_timeout_s}s, fact_ttl={cfg.fact_cache_ttl_s:.0f}s)\n"
         f"群聊触发率 : 追问窗口={cfg.group_followup_window_s}s, 兴趣词={cfg.group_topic_prob:.0%}, 随机插话={cfg.group_proactive_prob:.0%}, 保底={cfg.group_proactive_every_n}条\n"
         f"输入防抖   : 私聊={cfg.private_debounce_s}s, 群聊={cfg.group_debounce_s}s, 气泡打字延迟={cfg.bubble_typing_delay_s}s\n"
         f"表情包图库 : 已就绪 {sticker_count} 张（目录: {cfg.stickers_dir}）\n"
-        f"LLM 接口   : {cfg.llm_base_url} (model={cfg.llm_model}, vision={'ON' if cfg.enable_vision else 'OFF'}, API Key={key_status})\n"
+        f"LLM 接口   : {cfg.llm_base_url} (model={cfg.llm_model}, vision={'ON' if cfg.enable_vision else 'OFF'}@{cfg.vision_max_side}px, API Key={key_status})\n"
         f"SQLite 护栏: {sqlite_desc} | 当日调用 {snap.calls_used}/{snap.max_daily_calls}"
     )
     print(summary, flush=True)
@@ -249,6 +250,9 @@ def _build_kernel_from_config(
         guardrails=guardrails,
         stickers=stickers,
         enable_vision=cfg.enable_vision,
+        vision_max_side=cfg.vision_max_side,
+        compact_prompt=cfg.compact_prompt,
+        fact_cache_ttl_s=cfg.fact_cache_ttl_s,
         bot_qq=cfg.bot_qq,
         admin_user_ids=cfg.admin_user_ids,
         private_debounce_s=cfg.private_debounce_s,
@@ -268,6 +272,7 @@ def _build_kernel_from_config(
         subagent_max_steps=cfg.subagent_max_steps,
         subagent_timeout_s=cfg.subagent_timeout_s,
         subagent_max_concurrent=cfg.subagent_max_concurrent,
+        subagent_max_per_session=cfg.subagent_max_per_session,
         runtime_role=runtime_role,  # type: ignore[arg-type]
     )
 
@@ -391,14 +396,21 @@ async def run_brain_only(
         )
         p_now = persona.current()
         logger.info(
-            "qq-agent [brain] worker ready (pid=%d, endpoint=%s, model=%s, fast_thinking=%s, subagent=%s/%s, web_search=%s, profile=%s)",
+            "qq-agent [brain] worker ready (pid=%d, endpoint=%s, model=%s, fast_thinking=%s, compact=%s, debounce=%.2fs/%.2fs, subagent=%s/%s[max=%d/group=%d], web_search=%s[ttl=%.0fs], vision_max=%dpx, profile=%s)",
             os.getpid(),
             cfg.llmos_plain_endpoint,
             cfg.llm_model,
             "on" if cfg.llm_enable_thinking else "off",
+            "on" if cfg.compact_prompt else "off",
+            cfg.private_debounce_s,
+            cfg.group_debounce_s,
             "on" if cfg.subagent_enabled else "off",
             "thinking:on" if cfg.subagent_enable_thinking else "thinking:off",
+            cfg.subagent_max_concurrent,
+            cfg.subagent_max_per_session,
             "on" if cfg.web_search_enabled else "off",
+            cfg.fact_cache_ttl_s,
+            cfg.vision_max_side,
             p_now.active_profile or "default",
         )
         await kernel.run_forever(stop_event=effective_stop)
