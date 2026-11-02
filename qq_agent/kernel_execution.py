@@ -9,6 +9,7 @@ import uuid
 
 import httpx
 
+from .anti_injection import build_dynamic_injection_anchor, detect_injection_signals
 from .kernel_maintenance import run_agent_loop_with_maintenance_retry
 from .kernel_turn_helpers import (
     _FAST_BRAIN_TOOL_GUIDE,
@@ -206,6 +207,15 @@ class KernelExecutionMixin:
                 else _FAST_BRAIN_TOOL_GUIDE
             )
             sys_prompt = f"{sys_prompt}\n\n{tool_guide}"
+
+        inj_signals = detect_injection_signals(query_text)
+        if inj_signals:
+            anchor = build_dynamic_injection_anchor(
+                self.persona.current().name,
+                signals=inj_signals,
+                compact=self.compact_prompt,
+            )
+            sys_prompt = f"{sys_prompt}\n\n{anchor}"
 
         return sys_prompt
 
@@ -406,7 +416,7 @@ class KernelExecutionMixin:
             group_id=msg.group_id,
             user_id=msg.user_id,
             include_tool_guide=self.enable_tools,
-            query_text=clean_text,
+            query_text=(f"{clean_text}\n{msg.reply_to_text}" if msg.reply_to_text else clean_text),
         )
         sys_msg = ChatMessage(role="system", content=sys_prompt)
         history = self.sessions.get_window(msg.session_key)

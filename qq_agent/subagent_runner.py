@@ -8,6 +8,7 @@ from dataclasses import dataclass
 import inspect
 import logging
 
+from qq_agent.anti_injection import format_subagent_time_anchor
 from qq_agent.pi_loop import (
     AfterStepHook,
     BeforeStepHook,
@@ -137,7 +138,10 @@ class SubAgentRunner:
         cancel_token: CancelToken,
         on_complete: SubAgentCompleteCallback | None,
     ) -> SubAgentResult:
-        sys_msg = ChatMessage(role="system", content=self._system_prompt)
+        sys_msg = ChatMessage(
+            role="system",
+            content=f"{self._system_prompt}\n\n{format_subagent_time_anchor()}",
+        )
         user_sections = [f"<research_goal>\n{request.goal.strip()}\n</research_goal>"]
         if request.context_hint.strip():
             user_sections.append(

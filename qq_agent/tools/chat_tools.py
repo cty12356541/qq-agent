@@ -10,6 +10,7 @@ import json
 import re
 from typing import Any
 
+from qq_agent.anti_injection import sanitize_outbound_bubble
 from qq_agent.channel_bridge import MessageBus
 import qq_agent.stickers as _stickers_mod
 from qq_agent.stickers import StickerRegistry, _STICKER_TAG_RE
@@ -275,11 +276,11 @@ def build_send_message_tool(
             post_tag_unwrapped = _try_parse_stringified_bubble_list(normalized)
             if post_tag_unwrapped is not None:
                 for inner in _normalize_bubble_candidates(post_tag_unwrapped):
-                    inner_clean = inner.strip()
+                    inner_clean = sanitize_outbound_bubble(inner.strip())
                     if inner_clean:
                         clean_bubbles.append(inner_clean)
             else:
-                clean_bubbles.append(normalized)
+                clean_bubbles.append(sanitize_outbound_bubble(normalized))
 
         clean_bubbles = clean_bubbles[:MAX_BUBBLES_PER_SEND]
 
@@ -440,7 +441,7 @@ async def flush_fallback_text_reply(
     clean_text = clean_text.strip()
     if clean_text:
         unwrapped_fallback = [
-            part.strip()
+            sanitize_outbound_bubble(part.strip())
             for part in _normalize_bubble_candidates(clean_text)
             if part.strip()
         ]

@@ -6,6 +6,7 @@ from collections.abc import Collection
 import inspect
 from typing import Any
 
+from qq_agent.anti_injection import check_remember_note_safety
 from qq_agent.memory import MemoryStore
 from qq_agent.tools import ToolArgumentError, ToolBinding
 from qq_agent.types import InboundMessage, ToolDef
@@ -101,6 +102,8 @@ def build_remember_note_tool(
 ) -> ToolBinding:
     """Build `remember_note` (`is_chat_terminal=False, requires_followup=False`) with closure-locked `scope`."""
     locked_scope = resolve_locked_memory_scope(msg, admin_user_ids=admin_user_ids)
+    admin_set = {int(uid) for uid in admin_user_ids}
+    speaker_is_admin = int(msg.user_id) in admin_set
     char_cap = max(20, int(max_content_chars))
 
     definition = ToolDef(
@@ -159,6 +162,15 @@ def build_remember_note_tool(
             )
 
         if kind == "fact":
+            safety_err = check_remember_note_safety(
+                cleaned_content,
+                kind="fact",
+                speaker_user_id=int(msg.user_id),
+                target_user_id=int(msg.user_id),
+                is_admin=speaker_is_admin,
+            )
+            if safety_err is not None:
+                return safety_err
             fact_id = _write_scoped_fact(
                 memory,
                 content=cleaned_content,
@@ -181,6 +193,16 @@ def build_remember_note_tool(
                 ) from exc
             if target_uid <= 0:
                 raise ToolArgumentError("'target_user_id' must be a positive integer")
+
+        safety_err = check_remember_note_safety(
+            cleaned_content,
+            kind="user_profile",
+            speaker_user_id=int(msg.user_id),
+            target_user_id=target_uid,
+            is_admin=speaker_is_admin,
+        )
+        if safety_err is not None:
+            return safety_err
 
         raw_display = args.get("display_name")
         if isinstance(raw_display, str) and raw_display.strip():
