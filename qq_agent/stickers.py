@@ -179,7 +179,7 @@ class StickerRegistry:
         if head.endswith("动图") and len(head) > 2:
             head = head[:-2]
         short = head or raw
-        return short[:6]
+        return short[:4]
 
     def render_prompt_guide(self, *, compact: bool = False) -> str:
         """Build system-prompt instructions listing available 奶龙/奶蛙 sticker IDs."""
@@ -199,7 +199,8 @@ class StickerRegistry:
             "你手里存了一套奶龙、奶蛙抽象表情包。需要发表情包时，在回复末尾附上 `[[sticker:表情ID]]`（每次最多 1 张）：",
         ]
         for entry in entries:
-            lines.append(f"- `{entry.id}`：[{entry.series}] {entry.label}")
+            tag_hint = f"（常用词：{'/'.join(entry.tags)}）" if entry.tags else ""
+            lines.append(f"- `{entry.id}`：[{entry.series}] {entry.label}{tag_hint}")
         lines.extend(
             [
                 "使用原则：",

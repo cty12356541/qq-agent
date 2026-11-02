@@ -125,3 +125,353 @@ series = "奶龙"
 file = "nailong_emo.jpg"
 label = "窗边忧郁看雨（网抑云/寂寞沉思/叹气）"
 tags = ["忧郁", "看窗", "emo", "网抑云"]
+
+[[stickers]]
+id = "naiwa_wild_laugh"
+series = "奶蛙"
+file = "naiwa_wild_laugh.gif"
+label = "张大嘴魔性狂笑动图（笑裂了/绷不住了/哈哈哈哈）"
+tags = ["狂笑", "张嘴笑", "笑裂"]
+
+[[stickers]]
+id = "naiwa_kobe_laugh"
+series = "奶蛙"
+file = "naiwa_kobe_laugh.jpg"
+label = "穿球衣捂肚狂笑（地狱笑话/憋不住笑/看乐子）"
+tags = ["球衣", "地狱笑话", "捂肚笑"]
+
+[[stickers]]
+id = "naiwa_chicken"
+series = "奶蛙"
+file = "naiwa_chicken.jpg"
+label = "大绿眼公鸡造型（小黑子/坤坤/鸡你太美）"
+tags = ["公鸡", "小黑子", "坤"]
+
+[[stickers]]
+id = "naiwa_colorful_smug"
+series = "奶蛙"
+file = "naiwa_colorful_smug.png"
+label = "炫彩琉璃半眯眼憋笑（高贵冷艳/炫彩难绷/装逼）"
+tags = ["炫彩", "憋笑", "高贵"]
+
+[[stickers]]
+id = "naiwa_durian_hat"
+series = "奶蛙"
+file = "naiwa_durian_hat.png"
+label = "头顶榴莲壳面无表情凝视（头铁/发呆/无语凝视）"
+tags = ["榴莲", "发呆", "头铁"]
+
+[[stickers]]
+id = "naiwa_side_eye"
+series = "奶蛙"
+file = "naiwa_side_eye.jpg"
+label = "侧脸大绿眼斜视（警惕/看傻子/不对劲）"
+tags = ["斜视", "侧脸", "不对劲"]
+
+[[stickers]]
+id = "naiwa_rub_belly"
+series = "奶蛙"
+file = "naiwa_rub_belly.gif"
+label = "书房摸肚皮晃悠动图（吃饱撑的/悠闲摸鱼/溜达）"
+tags = ["摸肚皮", "摸鱼", "吃饱"]
+
+[[stickers]]
+id = "naiwa_galaxy_laugh"
+series = "奶蛙"
+file = "naiwa_galaxy_laugh.gif"
+label = "星空银河黑化捂肚狂笑动图（宇宙级好笑/黑化狂笑/乐疯）"
+tags = ["星空", "黑化笑", "宇宙笑"]
+
+[[stickers]]
+id = "naiwa_kick_step"
+series = "奶蛙"
+file = "naiwa_kick_step.jpg"
+label = "抬腿大步流星走来（闪亮登场/理直气壮/走两步）"
+tags = ["登场", "迈步", "来了"]
+
+[[stickers]]
+id = "naiwa_zoro"
+series = "奶蛙"
+file = "naiwa_zoro.png"
+label = "背三把刀剑客造型（迷路了/硬汉/拔刀）"
+tags = ["索隆", "拔刀", "硬汉"]
+
+[[stickers]]
+id = "naiwa_wave_hand"
+series = "奶蛙"
+file = "naiwa_wave_hand.gif"
+label = "大绿眼呆萌挥手打招呼动图（嗨/在吗/出来玩）"
+tags = ["挥手", "打招呼", "嗨"]
+
+[[stickers]]
+id = "naiwa_frown_mad"
+series = "奶蛙"
+file = "naiwa_frown_mad.png"
+label = "紧锁眉头极度嫌弃厌恶（地铁老人看手机/嫌弃/什么逆天玩意）"
+tags = ["嫌弃", "皱眉", "逆天"]
+
+[[stickers]]
+id = "naiwa_evil_smirk"
+series = "奶蛙"
+file = "naiwa_evil_smirk.jpg"
+label = "斜眼露齿坏笑（邪魅一笑/懂的都懂/憋坏水）"
+tags = ["坏笑", "斜眼笑", "嘿嘿"]
+
+[[stickers]]
+id = "naiwa_give_orange"
+series = "奶蛙"
+file = "naiwa_give_orange.png"
+label = "双手捧橘子乖巧递给你（买橘子/乖巧/孝心）"
+tags = ["橘子", "递橘子", "乖巧"]
+
+[[stickers]]
+id = "naiwa_jump_joy"
+series = "奶蛙"
+file = "naiwa_jump_joy.gif"
+label = "举双手蹦跳欢呼动图（起飞/好耶/开心蹦迪）"
+tags = ["欢呼", "好耶", "起飞"]
+
+[[stickers]]
+id = "naiwa_finger_think"
+series = "奶蛙"
+file = "naiwa_finger_think.jpg"
+label = "手指戳嘴唇呆呆思考（让我想想/装傻/假装思考）"
+tags = ["戳嘴", "装傻", "想一下"]
+
+[[stickers]]
+id = "nailong_cat_paw"
+series = "奶龙"
+file = "nailong_cat_paw.png"
+label = "猫耳招财猫爪半眯眼（招财/敷衍卖萌/喵）"
+tags = ["猫爪", "招财", "猫耳"]
+
+[[stickers]]
+id = "naiwa_point_mock"
+series = "奶蛙"
+file = "naiwa_point_mock.jpg"
+label = "叉腰指着旁边大笑（看那个小丑/指指点点/嘲讽）"
+tags = ["叉腰笑", "指人", "看小丑"]
+
+[[stickers]]
+id = "naiwa_twerk"
+series = "奶蛙"
+file = "naiwa_twerk.gif"
+label = "回头撅屁股摇摆动图（扭屁股/略略略/欠揍挑衅）"
+tags = ["撅屁股", "挑衅", "略略略"]
+
+[[stickers]]
+id = "nailong_squint_smug"
+series = "奶龙"
+file = "nailong_squint_smug.jpg"
+label = "红脸蛋半眯眼傲娇仰视（鄙视/就这/高傲看不起）"
+tags = ["半眯眼", "鄙视", "就这"]
+
+[[stickers]]
+id = "nailong_window_laugh"
+series = "奶龙"
+file = "nailong_window_laugh.jpg"
+label = "穿裤衩窗前捂肚大笑（看热闹/笑看风云/吃瓜乐）"
+tags = ["窗前笑", "看热闹", "裤衩"]
+
+[[stickers]]
+id = "naiwa_angel_pray"
+series = "奶蛙"
+file = "naiwa_angel_pray.jpg"
+label = "天使翅膀双手合十祈祷（阿门/保佑过关/祝你好运）"
+tags = ["祈祷", "保佑", "天使"]
+
+[[stickers]]
+id = "naiwa_cross_legs"
+series = "奶蛙"
+file = "naiwa_cross_legs.jpg"
+label = "双手叉腰跷二郎腿站立（看戏/等你继续编/拽）"
+tags = ["叉腰", "等你编", "拽"]
+
+[[stickers]]
+id = "naiwa_kungfu_dance"
+series = "奶蛙"
+file = "naiwa_kungfu_dance.gif"
+label = "金鸡独立搞笑跳舞动图（发疯/抽象舞步/练功）"
+tags = ["发疯", "金鸡独立", "抽象舞"]
+
+[[stickers]]
+id = "naiwa_peek_legs"
+series = "奶蛙"
+file = "naiwa_peek_legs.png"
+label = "弯腰从胯下钻头坏笑（换个角度看小丑/钻裤裆/抽象窥探）"
+tags = ["胯下看", "钻头", "窥探"]
+
+[[stickers]]
+id = "nailong_shy_twist"
+series = "奶龙"
+file = "nailong_shy_twist.gif"
+label = "红背景咬牙害羞扭捏动图（怪不好意思/暗爽/扭捏）"
+tags = ["害羞", "扭捏", "暗爽"]
+
+[[stickers]]
+id = "naiwa_never_laugh"
+series = "奶蛙"
+file = "naiwa_never_laugh.png"
+label = "黑白灰暗配字我再也不会笑了（心死/麻木/笑不出来）"
+tags = ["不会笑了", "麻木", "心死"]
+
+[[stickers]]
+id = "nailong_pink_bow"
+series = "奶龙"
+file = "nailong_pink_bow.png"
+label = "粉红蝴蝶结闭眼乖巧微笑（装乖/精致/岁月静好）"
+tags = ["蝴蝶结", "装乖", "微笑"]
+
+[[stickers]]
+id = "naiwa_nod_blink"
+series = "奶蛙"
+file = "naiwa_nod_blink.gif"
+label = "大绿眼乖巧点头眨眼动图（嗯嗯对对对/敷衍点头/已老实）"
+tags = ["点头", "已老实", "嗯嗯"]
+
+[[stickers]]
+id = "naiwa_cabbage_laugh"
+series = "奶蛙"
+file = "naiwa_cabbage_laugh.jpg"
+label = "裹着大白菜叶捂肚狂笑（菜就多练/真菜/又菜又爱玩）"
+tags = ["白菜", "菜就多练", "真菜"]
+
+[[stickers]]
+id = "naiwa_christmas_duo"
+series = "奶蛙"
+file = "naiwa_christmas_duo.png"
+label = "双人同步捂肚狂笑（双倍嘲笑/一起笑话你/哈哈）"
+tags = ["双人笑", "一起笑", "双倍快乐"]
+
+[[stickers]]
+id = "naiwa_roar_laugh"
+series = "奶蛙"
+file = "naiwa_roar_laugh.gif"
+label = "仰头张大嘴咆哮狂笑动图（笑出猪叫/爆笑不止/绷不住）"
+tags = ["咆哮笑", "爆笑", "猪叫"]
+
+[[stickers]]
+id = "nailong_white_smug"
+series = "奶龙"
+file = "nailong_white_smug.jpg"
+label = "纯白糯米团子半眯眼傲娇（冷漠审视/白胖子/无语）"
+tags = ["白团子", "冷漠", "傲娇"]
+
+[[stickers]]
+id = "naiwa_close_up_turn"
+series = "奶蛙"
+file = "naiwa_close_up_turn.gif"
+label = "大绿眼超近距离突然转头盯人动图（锁定目标/警觉/盯）"
+tags = ["转头盯", "锁定", "警觉"]
+
+[[stickers]]
+id = "naiwa_monk_zen"
+series = "奶蛙"
+file = "naiwa_monk_zen.png"
+label = "穿袈裟戴佛珠双手合十（功德加一/大慈大悲/看破红尘）"
+tags = ["袈裟", "佛系", "功德"]
+
+[[stickers]]
+id = "naiwa_hug_laugh"
+series = "奶蛙"
+file = "naiwa_hug_laugh.jpg"
+label = "两只奶蛙抱在一起捂肚坏笑（抱团看戏/狼狈为奸/吃瓜笑）"
+tags = ["抱团笑", "看戏", "坏笑"]
+
+[[stickers]]
+id = "naiwa_doraemon_laugh"
+series = "奶蛙"
+file = "naiwa_doraemon_laugh.png"
+label = "哆啦A梦皮肤捂肚狂笑（蓝胖子嘲笑/救不了你/难绷）"
+tags = ["哆啦A梦", "蓝胖子", "救不了"]
+
+[[stickers]]
+id = "naiwa_zhuge_liang"
+series = "奶蛙"
+file = "naiwa_zhuge_liang.jpg"
+label = "古装留胡子诸葛丞相沉思（卧龙凤雏/略懂/观今夜天象）"
+tags = ["诸葛亮", "卧龙凤雏", "略懂"]
+
+[[stickers]]
+id = "naiwa_sunglasses_support"
+series = "奶蛙"
+file = "naiwa_sunglasses_support.gif"
+label = "戴墨镜挥手我必须狠狠支持动图（狠狠支持/赞同/顶你）"
+tags = ["狠狠支持", "支持", "墨镜"]
+
+[[stickers]]
+id = "naiwa_finger_heart"
+series = "奶蛙"
+file = "naiwa_finger_heart.png"
+label = "歪头单手比小爱心（谢了/小比心/好人一生平安）"
+tags = ["小爱心", "谢谢", "比心"]
+
+[[stickers]]
+id = "naiwa_hold_big_heart"
+series = "奶蛙"
+file = "naiwa_hold_big_heart.png"
+label = "抱着大粉红爱心乖巧看你（送你大爱心/贴贴/喜欢）"
+tags = ["大爱心", "送心", "喜欢"]
+
+[[stickers]]
+id = "naiwa_cat_blep"
+series = "奶蛙"
+file = "naiwa_cat_blep.jpg"
+label = "猫耳吐舌头亮粉红肉垫（装猫娘/吐舌头/略略略）"
+tags = ["猫娘", "吐舌", "肉垫"]
+
+[[stickers]]
+id = "naiwa_sky_fall"
+series = "奶蛙"
+file = "naiwa_sky_fall.gif"
+label = "从蓝天白云高空坠落动图（天塌了/坠机/完蛋寄了）"
+tags = ["天塌了", "坠机", "完蛋"]
+
+[[stickers]]
+id = "nailong_glasses_nerd"
+series = "奶龙"
+file = "nailong_glasses_nerd.png"
+label = "戴黑框眼镜中分头半眯眼（懂哥审视/斯文败类/睿智眼神）"
+tags = ["黑框眼镜", "懂哥", "睿智"]
+
+[[stickers]]
+id = "naiwa_sad_droop"
+series = "奶蛙"
+file = "naiwa_sad_droop.png"
+label = "垂眼丧气难过低头（失落/破防难受/心累）"
+tags = ["丧气", "难过", "心累"]
+
+[[stickers]]
+id = "nailong_duo_squint"
+series = "奶龙"
+file = "nailong_duo_squint.gif"
+label = "两只奶龙并排半眯眼同步审视动图（双重鄙视/静静看你装逼）"
+tags = ["双重鄙视", "并排看", "看你装"]
+
+[[stickers]]
+id = "naiwa_teardrop_cry"
+series = "奶蛙"
+file = "naiwa_teardrop_cry.jpg"
+label = "大绿眼含泪委屈巴巴（要哭了/别骂了/可怜兮兮）"
+tags = ["含泪", "委屈", "别骂了"]
+
+[[stickers]]
+id = "nailong_blonde_hair"
+series = "奶龙"
+file = "nailong_blonde_hair.jpeg"
+label = "金色刘海帅气发型半眯眼（精致男孩/自恋/耍帅）"
+tags = ["金发", "耍帅", "自恋"]
+
+[[stickers]]
+id = "naiwa_shush"
+series = "奶蛙"
+file = "naiwa_shush.jpg"
+label = "大绿眼竖食指嘘安静（嘘/小声点/不可说）"
+tags = ["嘘", "安静", "小声点"]
+
+[[stickers]]
+id = "naiwa_stomp_laugh"
+series = "奶蛙"
+file = "naiwa_stomp_laugh.gif"
+label = "弯腰拍腿跺脚狂笑动图（笑到跺脚/拍腿狂笑/乐麻了）"
+tags = ["跺脚笑", "拍腿笑", "笑死"]
