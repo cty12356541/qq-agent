@@ -316,6 +316,10 @@ class MemoryStore(SharedCortexMixin):
         cleaned_name = sender_name.strip()
         if not cleaned_name:
             return
+        from qq_agent.anti_injection import detect_injection_signals
+
+        if detect_injection_signals(cleaned_name):
+            return
         uid = int(user_id)
         now = time.time()
         with self._lock:
@@ -553,7 +557,9 @@ class MemoryStore(SharedCortexMixin):
             if profile is not None and profile.traits_text.strip():
                 safe_traits = _sanitize_memory_text(profile.traits_text)
                 if safe_traits:
-                    if profile.display_name.strip():
+                    from qq_agent.anti_injection import detect_injection_signals
+
+                    if profile.display_name.strip() and not detect_injection_signals(profile.display_name):
                         safe_name = _sanitize_memory_text(profile.display_name)
                         profile_line = f"- {safe_name}（ID:{profile.user_id}）：{safe_traits}"
                     else:

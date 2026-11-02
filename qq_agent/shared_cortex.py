@@ -8,6 +8,7 @@ import threading
 import time
 from typing import TYPE_CHECKING
 
+from qq_agent.anti_injection import detect_injection_signals
 from qq_agent.cortex_cues import (
     SharedFact,
     UserProfile,
@@ -204,7 +205,12 @@ class SharedCortexMixin:
         """Non-destructively append deduplicated public interest cues (`；`-joined) without overwriting manual `/profile` traits."""
         uid = int(user_id)
         limit = max(1, int(max_chars))
-        cleaned_name = _sanitize_memory_text(sender_name.strip())
+        raw_name = sender_name.strip()
+        cleaned_name = (
+            ""
+            if (not raw_name or detect_injection_signals(raw_name))
+            else _sanitize_memory_text(raw_name)
+        )
 
         valid_cues: list[str] = []
         for raw_cue in cues:

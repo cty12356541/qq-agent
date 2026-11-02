@@ -64,6 +64,23 @@ _INJECTION_SIGNAL_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
             flags=re.IGNORECASE,
         ),
     ),
+    (
+        "encoded_or_puzzle_injection",
+        re.compile(
+            r"(?:(?:unicode|base64|hex|rot13|ascii|utf-?8)\s*(?:解码|编码|解密|转换)(?:题)?"
+            r"|(?:\\u[0-9a-f]{4}){2,}"
+            r"|解码(?:后|完)?(?:执行|遵循|照做|回复)"
+            r"|赛博土豆)",
+            flags=re.IGNORECASE,
+        ),
+    ),
+    (
+        "spoofed_system_event",
+        re.compile(
+            r"(?:你已被移出(?:本)?群聊|你已被(?:管理员|群主)?禁言|该消息已(?:被)?撤回并执行|系统(?:強制|强制)?通知[:：])",
+            flags=re.IGNORECASE,
+        ),
+    ),
 )
 
 # Patterns forbidden inside `remember_note` (`fact` or `user_profile`) to prevent persistent 2nd-order injection.
@@ -72,9 +89,10 @@ _MEMORY_POISON_RE = re.compile(
     r"|<\s*/?\s*(?:untrusted_|system|developer|tool_result)\b"
     r"|(?:每句话|每一句|每句|每次回复|句尾|结尾)(?:都)?(?:必须|都要|强制|规定|要求)"
     r"|(?:必须|强制|规定|要求)(?:带|加|说)\s*['\"“”‘’]?\s*喵"
-    r"|(?:扮演|变成|切换为|自称)\s*(?:一只|一个)?\s*(?:猫娘|女仆|魅魔|宠物|奴隶)"
+    r"|(?:扮演|变成|切换为|自称)\s*(?:一只|一个)?\s*(?:猫娘|女仆|魅魔|宠物|奴隶|赛博土豆)"
     r"|(?:群规|本群|规定|要求|命令)\s*(?:ame|机器人|你)\s*(?:必须|每句|扮演|叫|喊)"
-    r"|(?:必须|要|喜欢让?(?:ame|机器人|你)?)\s*(?:叫|喊|称呼)(?:他|她|我)?\s*(?:主人|爸爸|爷爷))",
+    r"|(?:必须|要|喜欢让?(?:ame|机器人|你)?)\s*(?:叫|喊|称呼)(?:他|她|我)?\s*(?:主人|爸爸|爷爷)"
+    r"|你已被移出(?:本)?群聊|(?:unicode|base64)\s*解码)",
     flags=re.IGNORECASE,
 )
 
@@ -233,6 +251,8 @@ def sanitize_outbound_bubble(
         return fallback_text
 
     cleaned = text.replace("本奶娃", "我").replace("有何吩咐", "干嘛").replace("待命中", "").strip()
+    if cleaned.startswith(("[语音：", "[语音:")) and cleaned.endswith("]"):
+        cleaned = cleaned[4:-1].strip()
     cleaned = _LEADING_FAKE_LAUGH_RE.sub("", cleaned).strip()
     if len(cleaned) <= 36 and "\n" not in cleaned:
         stripped_excl = _TRAILING_EXCLAMATION_RE.sub("", cleaned).strip()

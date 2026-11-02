@@ -5,6 +5,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 import re
 
+from qq_agent.anti_injection import detect_injection_signals
+
 _MEMORY_TAG_CLOSED_RE = re.compile(
     r"<\s*(/?)\s*(untrusted_chat_message|untrusted_group_context|untrusted_web_results|untrusted_webpage|subagent_research_brief|tool_result|system|developer)\b([^>]*)>",
     flags=re.IGNORECASE,
@@ -357,13 +359,15 @@ def _is_safe_core_containment(core_a: str, core_b: str) -> bool:
 
 
 def _sanitize_public_self_topic(topic_hint: str) -> str:
-    """Scrub `@mentions`, `>=5` digit IDs/phones, URLs, XML tags, and newlines for public `bot_self_state`."""
+    """Scrub `@mentions`, `>=5` digit IDs/phones, URLs, XML tags, injection attempts, and newlines for public `bot_self_state`."""
     if not topic_hint or not topic_hint.strip():
         return ""
     cleaned = _URL_RE.sub(" ", topic_hint)
     cleaned = _CQ_CODE_RE.sub(" ", cleaned)
     cleaned = _XML_TAG_RE.sub(" ", cleaned)
     cleaned = _ANGLE_BRACKET_RE.sub(" ", cleaned)
+    if detect_injection_signals(cleaned):
+        return ""
     cleaned = _EMAIL_RE.sub(" ", cleaned)
     cleaned = _AT_MENTION_RE.sub(" ", cleaned)
     cleaned = _PHONE_LIKE_RE.sub(" ", cleaned)
