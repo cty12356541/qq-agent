@@ -202,7 +202,7 @@
 - **影响**：一切富媒体出站（语音、大图 base64）都必须在应用侧落盘再由 adapter 回灌，平添 IO、缓存目录清理与两端协议约定职责
 - **证据**：`qq_agent/llmos_bus.py` `_spill_large_voice_uri` / `_rehydrate_voice_uri`（commit `dd4b8e2`）
 - **建议**：channel 侧提供大载荷分帧重组传输，或基于 Capability 的文件句柄/共享路径传递原语
-- **严重度**：低-中｜**状态**：应用侧已绕过——>16KB 语音 URI 落盘 `data/tts/cache`，adapter 收帧后回灌还原为 `base64://` 发送（用后即删）
+- **严重度**：低-中｜**状态**：应用侧已绕过——>16KB 语音 URI 落盘 `data/tts/cache`，adapter 收帧后回灌还原为 `base64://` 发送（用后即删）。**llmos 侧已受理**（2026-11-02，`E-DOGFOOD-001`：`docs/evidence/stage-e/e-dogfood-001-qq-agent-l015-channel-payload-bound.md`，llmos main `1a81a13f`）——登记为 `REPORTED` 非闭环，以候选段增补入 W82 §E.6.1.8（`AWAITING_MAINTAINER_SCOPE_RULING`：是否纳入 W82 范围、并入 W82-B 或单开车道、技术路线 A 分帧重组 / B Capability 引用传递，待人类维护者裁定；llmos 侧并标注选项 A 与 W82-A 车道写集交叠须串行或拆分）
 
 ---
 
