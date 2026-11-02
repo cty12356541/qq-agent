@@ -473,3 +473,46 @@ def test_encoded_puzzle_and_spoofed_nickname_injection_guards(tmp_path) -> None:
         store.close()
 
 
+def test_dashboard_service_crud_profiles_memories_summaries_and_sessions(tmp_path) -> None:
+    from pathlib import Path
+    from qq_agent.config import AgentConfig
+    from qq_agent.dashboard_api import DashboardService
+
+    repo_root = Path(__file__).resolve().parents[1]
+    cfg = AgentConfig(
+        bot_qq=99999,
+        llm_api_key="test-key",
+        data_dir=tmp_path / "data",
+        persona_path=repo_root / "config" / "persona.default.toml",
+        stickers_manifest_path=repo_root / "config" / "stickers.toml",
+    )
+    svc = DashboardService(cfg)
+
+    # 1) Profile CRUD
+    svc.upsert_profile(user_id=10001, display_name="测试群友A", traits_text="战舰世界；常熬夜")
+    profs = svc.list_profiles()
+    assert len(profs) == 1
+    assert profs[0]["user_id"] == 10001
+    assert profs[0]["display_name"] == "测试群友A"
+    assert profs[0]["traits_text"] == "战舰世界；常熬夜"
+    assert svc.delete_profile(10001) is True
+    assert svc.list_profiles() == []
+
+    # 2) L3 Memory CRUD
+    created = svc.save_memory(scope="group:1028505110", content="本群周六晚八点打团")
+    mems = svc.list_memories()
+    assert len(mems) == 1
+    assert mems[0]["scope"] == "group:1028505110"
+    svc.save_memory(scope="public", content="修改后的公开记忆", fact_id=created["id"])
+    assert svc.list_memories()[0]["content"] == "修改后的公开记忆"
+    assert svc.delete_memory(created["id"]) is True
+    assert svc.list_memories() == []
+
+    # 3) L2 Summary & Self-State CRUD
+    svc.set_summary("group:1028505110", "群友正在聊春招和嵌入式")
+    sums = svc.list_summaries()
+    assert len(sums) == 1
+    assert sums[0]["summary_text"] == "群友正在聊春招和嵌入式"
+    svc.set_self_state("刚聊过：今晚打战舰世界")
+    ov = svc.get_overview()
+    assert ov["self_state"]["state_text"] == "刚聊过：今晚打战舰世界"

@@ -15,6 +15,7 @@ from typing import Any
 from .channel_bridge import ResilientLlmosBus
 from .config import AgentConfig
 from .daemon_manager import ManagedLlmosDaemon
+from .dashboard_api import DashboardHttpServer
 
 _REPO_ROOT = Path(__file__).resolve().parents[1]
 
@@ -181,8 +182,19 @@ async def run_supervisor(
     brain_failures = 0
     adapter_spawn_ts = time.monotonic()
     brain_spawn_ts = time.monotonic()
+    dashboard_srv: DashboardHttpServer | None = None
 
     try:
+        default_port = "8765" if stop_event is None else "0"
+        dash_port = int(os.environ.get("QQ_DASHBOARD_PORT", default_port) or "0")
+        if dash_port > 0:
+            try:
+                dashboard_srv = DashboardHttpServer(cfg, port=dash_port)
+                dashboard_srv.start()
+            except OSError as exc:
+                logger.warning("Dashboard HTTP server skipped on port %d (%s)", dash_port, exc)
+                dashboard_srv = None
+
         adapter_proc = await _spawn_worker("adapter")
         adapter_spawn_ts = time.monotonic()
         brain_proc = await _spawn_worker("brain")
@@ -313,6 +325,8 @@ async def run_supervisor(
                 stop_wait_task.cancel()
                 await asyncio.gather(stop_wait_task, return_exceptions=True)
     finally:
+        if dashboard_srv is not None:
+            dashboard_srv.close()
         await asyncio.gather(
             _terminate_child_process(brain_proc),
             _terminate_child_process(adapter_proc),
