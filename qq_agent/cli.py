@@ -23,6 +23,7 @@ from .channel_bridge import (
 )
 from .config import AgentConfig
 from .guardrails import GuardrailManager
+from .kernel_maintenance import request_brain_reload_sentinel
 from .memory import MemoryStore
 from .persona import PersonaManager
 from .provider import OpenAICompatProvider
@@ -84,6 +85,11 @@ def build_parser() -> argparse.ArgumentParser:
         "--dry-check",
         action="store_true",
         help="执行配置、人设 TOML、SQLite 存储与 llmos SDK 健康自检后退出 0（无需 LLM_API_KEY）",
+    )
+    parser.add_argument(
+        "--reload-brain",
+        action="store_true",
+        help="向运行中的 brain 进程发送零丢消息排空热重载信号后退出 0（保持 adapter WS 不断连，维护期间 @ 消息自动延迟回复）",
     )
     return parser
 
@@ -268,6 +274,8 @@ def _build_kernel_from_config(
         agent_max_steps=cfg.agent_max_steps,
         agent_turn_timeout_s=cfg.agent_turn_timeout_s,
         bubble_typing_delay_s=cfg.bubble_typing_delay_s,
+        hard_trigger_retry_delays_s=cfg.hard_trigger_retry_delays_s,
+        reload_sentinel_path=(cfg.brain_reload_sentinel_path if runtime_role == "brain" else None),
         web_search_enabled=cfg.web_search_enabled,
         web_search_timeout_s=cfg.web_search_timeout_s,
         search_api_key=cfg.search_api_key,
@@ -549,6 +557,13 @@ def main(argv: Sequence[str] | None = None) -> int:
     except Exception as exc:
         print(f"[qq-agent] 配置加载失败：{exc}", file=sys.stderr, flush=True)
         return 2
+
+    if args.reload_brain:
+        try:
+            return request_brain_reload_sentinel(cfg.brain_reload_sentinel_path)
+        except Exception as exc:
+            print(f"[qq-agent] 发送 brain 热重载信号失败：{exc}", file=sys.stderr, flush=True)
+            return 1
 
     if args.dry_check:
         try:

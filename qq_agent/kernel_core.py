@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import Callable, Sequence
+import logging
+from pathlib import Path
 import time
 from typing import Any
 
@@ -13,6 +15,11 @@ from .channel_bridge import AckCoordinator, AdaptivePoller, BusQueueMetrics, Mes
 from .commands import AdminCommandRouter
 from .guardrails import GuardrailManager
 from .kernel_execution import KernelExecutionMixin
+from .kernel_maintenance import (
+    consume_reload_sentinel,
+    drain_kernel_for_graceful_reload,
+    extract_soft_orphaned_seqs_from_actor,
+)
 from .kernel_turn_helpers import (
     _AMBIENT_INJECT_LIMIT,
     _AMBIENT_RING_MAXLEN,
@@ -84,6 +91,8 @@ class AgentKernel(KernelExecutionMixin):
         subagent_max_concurrent: int = 6,
         subagent_max_per_session: int | None = 2,
         runtime_role: RuntimeRole = "all-in-one",
+        hard_trigger_retry_delays_s: Sequence[float] = (),
+        reload_sentinel_path: Path | str | None = None,
         clock: Callable[[], float] | None = None,
         error_fallback_reply: str = "刚卡了一下，再发一遍",
     ) -> None:
@@ -111,6 +120,13 @@ class AgentKernel(KernelExecutionMixin):
         self.agent_max_steps = max(1, int(agent_max_steps))
         self.agent_turn_timeout_s = max(1.0, float(agent_turn_timeout_s))
         self.bubble_typing_delay_s = max(0.0, float(bubble_typing_delay_s))
+        self.hard_trigger_retry_delays_s: tuple[float, ...] = tuple(
+            max(0.0, float(d)) for d in hard_trigger_retry_delays_s
+        )
+        self.reload_sentinel_path: Path | None = (
+            Path(reload_sentinel_path) if reload_sentinel_path is not None else None
+        )
+        self._closing: bool = False
 
         self.enable_tools = bool(enable_tools)
         self.web_search_enabled = bool(web_search_enabled)
@@ -235,7 +251,7 @@ class AgentKernel(KernelExecutionMixin):
             if item.trigger_reason in _SOFT_TRIGGER_REASONS:
                 self._dropped_soft_count += 1
                 self._record_ambient_group_line(item.msg)
-            if item.seqs:
+            if item.seqs and not (self._closing and item.trigger_reason not in _SOFT_TRIGGER_REASONS):
                 self._schedule_bg_task(self._mark_seqs_done(item.seqs))
             return
         if isinstance(item, list):
@@ -364,9 +380,10 @@ class AgentKernel(KernelExecutionMixin):
         drain_steering: Callable[[], Sequence[str]],
     ) -> None:
         pin_candidate = envelope.seqs[-1] if envelope.seqs else None
+        reply: OutboundReply | None = None
         pinned_to_subagent = False
         try:
-            _, pinned_to_subagent = await self._execute_triggered_turn(
+            reply, pinned_to_subagent = await self._execute_triggered_turn(
                 envelope.msg,
                 clean_text=envelope.clean_text,
                 trigger_reason=envelope.trigger_reason,
@@ -376,11 +393,20 @@ class AgentKernel(KernelExecutionMixin):
                 publish_to_bus=True,
             )
         finally:
-            seqs_to_ack = (
-                envelope.seqs[:-1] if (pinned_to_subagent and envelope.seqs) else envelope.seqs
+            preserve_unacked_hard = (
+                self._closing
+                and reply is None
+                and not pinned_to_subagent
+                and envelope.trigger_reason not in _SOFT_TRIGGER_REASONS
+                and cancel_token.is_cancelled
+                and cancel_token.reason == "actor_closed"
             )
-            for seq in seqs_to_ack:
-                await self._ack_coordinator.mark_done(seq)
+            if not preserve_unacked_hard:
+                seqs_to_ack = (
+                    envelope.seqs[:-1] if (pinned_to_subagent and envelope.seqs) else envelope.seqs
+                )
+                for seq in seqs_to_ack:
+                    await self._ack_coordinator.mark_done(seq)
 
     @staticmethod
     def _has_cancel_intent(text: str) -> bool:
@@ -576,16 +602,17 @@ class AgentKernel(KernelExecutionMixin):
             await asyncio.gather(*list(self._bg_tasks), return_exceptions=True)
 
     async def aclose(self) -> None:
-        """Gracefully close all resident SessionActors, SubAgentRunner tasks, HTTP pools, and background jobs."""
-        orphaned: list[int] = []
+        """Gracefully close actors, SubAgentRunner, HTTP pools, and preserve un-replied hard triggers un-ACKed."""
+        self._closing = True
+        soft_orphaned: list[int] = []
         actors = list(self._actors.values())
         for actor in actors:
-            orphaned.extend(self._extract_orphaned_actor_seqs(actor))
+            soft_orphaned.extend(extract_soft_orphaned_seqs_from_actor(actor))
         if actors:
             await asyncio.gather(*(actor.aclose() for actor in actors), return_exceptions=True)
         await self._subagent_runner.aclose()
-        if orphaned:
-            await self._mark_seqs_done(orphaned)
+        if soft_orphaned:
+            await self._mark_seqs_done(soft_orphaned)
         await self.wait_background_tasks()
         vision_client = self._vision_http_client
         self._vision_http_client = None
@@ -614,7 +641,7 @@ class AgentKernel(KernelExecutionMixin):
         stop_event: asyncio.Event | None = None,
         poll_interval_s: float = 0.05,
     ) -> None:
-        """Run non-blocking IngressDispatcher + per-session SessionActor pool until `stop_event` is set."""
+        """Run non-blocking IngressDispatcher + per-session SessionActor pool until `stop_event` or reload sentinel."""
         effective_stop = stop_event if stop_event is not None else asyncio.Event()
         base_interval = max(0.001, float(poll_interval_s))
         min_poll = min(0.015, base_interval)
@@ -624,6 +651,9 @@ class AgentKernel(KernelExecutionMixin):
 
         try:
             while not effective_stop.is_set():
+                if consume_reload_sentinel(self.reload_sentinel_path):
+                    await drain_kernel_for_graceful_reload(self)
+                    return
                 dispatched = await self.dispatch_once()
                 if dispatched > 0:
                     poller.reset()

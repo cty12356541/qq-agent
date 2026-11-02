@@ -9,6 +9,7 @@ import uuid
 
 import httpx
 
+from .kernel_maintenance import run_agent_loop_with_maintenance_retry
 from .kernel_turn_helpers import (
     _FAST_BRAIN_TOOL_GUIDE,
     _FAST_BRAIN_TOOL_GUIDE_COMPACT,
@@ -296,27 +297,30 @@ class KernelExecutionMixin:
                     )
                 )
 
-            end_event: TurnEndEvent | None = None
+            def _set_cb_latency(ms: float) -> None:
+                self._last_turn_latency_ms = ms
+
             try:
-                async for event in agent_loop(
-                    self.provider,
-                    [
+                end_event = await run_agent_loop_with_maintenance_retry(
+                    provider=self.provider,
+                    messages=[
                         ChatMessage(role="system", content=sys_prompt),
                         *history,
                         ChatMessage(role="user", content=callback_user_text),
                     ],
                     tools=callback_tools,
+                    turn_state=turn_state,
+                    retry_delays_s=self.hard_trigger_retry_delays_s,  # type: ignore[attr-defined]
+                    allow_retry=True,
                     enable_thinking=False,
                     max_steps=1,
                     timeout_s=self.agent_turn_timeout_s,
                     cancel_token=cancel_token,
                     before_step=self._check_followup_step_budget,
                     after_step=self._record_step_usage,
-                ):
-                    if isinstance(event, TurnEndEvent):
-                        end_event = event
-                        if event.latency_ms > 0.0:
-                            self._last_turn_latency_ms = event.latency_ms
+                    on_latency_ms=_set_cb_latency,
+                    session_label=f"subagent:{res.session_key}:{res.task_id}",
+                )
             except ProviderError as exc:
                 logger.error(
                     "Fast-brain subagent synthesis ProviderError on session=%s task=%s: %s",
@@ -497,16 +501,33 @@ class KernelExecutionMixin:
                     return guard.override_model
                 return self._check_followup_step_budget(step)
 
-            end_event: TurnEndEvent | None = None
+            def _on_tool_event(event: ToolExecutionEvent) -> None:
+                if (
+                    event.call.name == "web_search"
+                    and not event.outcome.is_error
+                    and self.memory is not None
+                    and self.fact_cache_ttl_s > 0.0
+                ):
+                    raw_q = str(event.call.arguments.get("query", "")).strip()
+                    brief_txt = _summarize_web_search_outcome(event.outcome.content)
+                    if raw_q and brief_txt:
+                        self.memory.record_shared_fact(raw_q, brief_txt, ttl_s=self.fact_cache_ttl_s)
+
+            def _set_turn_latency(ms: float) -> None:
+                self._last_turn_latency_ms = ms
+
             try:
-                async for event in agent_loop(
-                    self.provider,
-                    [
+                end_event = await run_agent_loop_with_maintenance_retry(
+                    provider=self.provider,
+                    messages=[
                         sys_msg,
                         *history,
                         ChatMessage(role="user", content=live_user_content, images=vision_images),
                     ],
                     tools=turn_tools,
+                    turn_state=turn_state,
+                    retry_delays_s=self.hard_trigger_retry_delays_s,  # type: ignore[attr-defined]
+                    allow_retry=(trigger_reason not in _SOFT_TRIGGER_REASONS),
                     model=guard.override_model,
                     max_steps=self.agent_max_steps if self.enable_tools else 1,
                     timeout_s=self.agent_turn_timeout_s,
@@ -514,26 +535,10 @@ class KernelExecutionMixin:
                     drain_steering=drain_steering,
                     before_step=_before_step,
                     after_step=self._record_step_usage,
-                ):
-                    if isinstance(event, ToolExecutionEvent):
-                        if (
-                            event.call.name == "web_search"
-                            and not event.outcome.is_error
-                            and self.memory is not None
-                            and self.fact_cache_ttl_s > 0.0
-                        ):
-                            raw_q = str(event.call.arguments.get("query", "")).strip()
-                            brief_txt = _summarize_web_search_outcome(event.outcome.content)
-                            if raw_q and brief_txt:
-                                self.memory.record_shared_fact(
-                                    raw_q,
-                                    brief_txt,
-                                    ttl_s=self.fact_cache_ttl_s,
-                                )
-                    elif isinstance(event, TurnEndEvent):
-                        end_event = event
-                        if event.latency_ms > 0.0:
-                            self._last_turn_latency_ms = event.latency_ms
+                    on_tool_event=_on_tool_event,
+                    on_latency_ms=_set_turn_latency,
+                    session_label=f"{msg.session_key}:{msg.event_id}",
+                )
             except ProviderError as exc:
                 logger.error(
                     "LLM provider error on session=%s event_id=%s: %s",
@@ -628,6 +633,11 @@ class KernelExecutionMixin:
                 clean_reply = raw_final
 
             if not clean_reply and sticker_id is None:
+                if end_event.reason == "timeout":
+                    err_out = self._build_outbound_reply(msg, self.error_fallback_reply)
+                    if publish_to_bus and err_out is not None:
+                        await self.bus.publish_outbound(err_out)
+                    return err_out, pinned_seq_claimed
                 clean_reply = raw_final or self.error_fallback_reply
 
             history_assistant = _format_sent_history(

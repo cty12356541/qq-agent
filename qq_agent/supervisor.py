@@ -103,6 +103,7 @@ async def run_supervisor(
     """Orchestrate and independently auto-heal 3 isolated OS processes: `llmos daemon` + `adapter` + `brain`."""
     effective_stop = stop_event if stop_event is not None else asyncio.Event()
     cfg.data_dir.mkdir(parents=True, exist_ok=True)
+    cfg.brain_reload_sentinel_path.unlink(missing_ok=True)
 
     managed_daemon: ManagedLlmosDaemon | None = None
     if cfg.llmos_plain_endpoint:
@@ -273,14 +274,23 @@ async def run_supervisor(
                 # 3) Auto-heal brain worker without dropping NapCat WS connection!
                 if brain_proc.returncode is not None and not effective_stop.is_set():
                     uptime = time.monotonic() - brain_spawn_ts
-                    brain_failures = 1 if uptime > 30.0 else (brain_failures + 1)
-                    delay = min(15.0, 0.8 * (2 ** min(brain_failures - 1, 4)))
-                    logger.warning(
-                        "brain worker exited (rc=%s, uptime=%.1fs); respawning in %.1fs (adapter WS stays online)",
-                        brain_proc.returncode,
-                        uptime,
-                        delay,
-                    )
+                    if brain_proc.returncode == 0:
+                        brain_failures = 0
+                        delay = 0.1
+                        logger.info(
+                            "brain worker completed graceful reload (rc=0, uptime=%.1fs); respawning in %.1fs (adapter WS stays online)",
+                            uptime,
+                            delay,
+                        )
+                    else:
+                        brain_failures = 1 if uptime > 30.0 else (brain_failures + 1)
+                        delay = min(15.0, 0.8 * (2 ** min(brain_failures - 1, 4)))
+                        logger.warning(
+                            "brain worker exited (rc=%s, uptime=%.1fs); respawning in %.1fs (adapter WS stays online)",
+                            brain_proc.returncode,
+                            uptime,
+                            delay,
+                        )
                     try:
                         await asyncio.wait_for(effective_stop.wait(), timeout=delay)
                         break

@@ -127,6 +127,33 @@ def _parse_int_set(raw: str | None, field_name: str) -> set[int]:
     return items
 
 
+def _parse_float_tuple(
+    raw: str | None,
+    default: tuple[float, ...],
+    field_name: str,
+) -> tuple[float, ...]:
+    if raw is None:
+        return default
+    stripped = raw.strip()
+    if not stripped:
+        return ()
+    if stripped.lower() in {"0", "off", "none", "false", "disabled"}:
+        return ()
+    values: list[float] = []
+    for part in stripped.split(","):
+        token = part.strip()
+        if not token:
+            continue
+        try:
+            val = float(token)
+        except ValueError as exc:
+            raise ValueError(f"Invalid float item {token!r} in {field_name}") from exc
+        if val < 0.0:
+            raise ValueError(f"Negative delay {val!r} not allowed in {field_name}")
+        values.append(val)
+    return tuple(values)
+
+
 def _parse_runtime_role(raw: str | None, default: RuntimeRole = "supervisor") -> RuntimeRole:
     if raw is None or not raw.strip():
         return default
@@ -180,6 +207,7 @@ class AgentConfig:
     agent_max_steps: int = 3
     agent_turn_timeout_s: float = 35.0
     bubble_typing_delay_s: float = 0.15
+    hard_trigger_retry_delays_s: tuple[float, ...] = (2.0, 5.0, 10.0)
 
     subagent_enabled: bool = True
     subagent_model: str | None = None
@@ -236,6 +264,10 @@ class AgentConfig:
     @property
     def llmos_runtime_state_path(self) -> Path:
         return (self.data_dir / "llmos_runtime.json").resolve()
+
+    @property
+    def brain_reload_sentinel_path(self) -> Path:
+        return (self.data_dir / "brain.reload").resolve()
 
     @property
     def effective_subagent_model(self) -> str:
@@ -367,6 +399,11 @@ class AgentConfig:
             ),
             bubble_typing_delay_s=_parse_float_with_default(
                 get_raw("QQ_BUBBLE_TYPING_DELAY_S"), 0.15, "QQ_BUBBLE_TYPING_DELAY_S"
+            ),
+            hard_trigger_retry_delays_s=_parse_float_tuple(
+                get_raw("QQ_HARD_TRIGGER_RETRY_DELAYS"),
+                (2.0, 5.0, 10.0),
+                "QQ_HARD_TRIGGER_RETRY_DELAYS",
             ),
             subagent_enabled=_parse_bool_with_default(
                 get_raw("SUBAGENT_ENABLED"), True, "SUBAGENT_ENABLED"
