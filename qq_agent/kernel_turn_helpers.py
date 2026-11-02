@@ -11,13 +11,20 @@ from .commands import AdminCommandRouter
 from .pi_core import CancelToken, RegisteredTool, SessionActor, SubAgentRunner
 from .provider import LLMProvider
 from .tools import (
+    ChatTurnState,
     ToolBinding,
     WebPageFetcher,
     WebSearchClient,
+    build_cancel_subagent_tool,
     build_fetch_webpage_tool,
+    build_remember_note_tool,
+    build_send_message_tool,
+    build_spawn_subagent_tool,
+    build_stay_silent_tool,
     build_web_search_tool,
     execute_tool_call as execute_binding_call,
 )
+from .tts import NaiLongTtsEngine, build_send_voice_tool
 from .types import (
     ChatResult,
     InboundMessage,
@@ -25,6 +32,28 @@ from .types import (
     SubAgentResult,
     ToolCall,
 )
+
+_VOICE_INTENT_KEYWORDS: tuple[str, ...] = (
+    "语音",
+    "说句话",
+    "说两句",
+    "听听声音",
+    "听声音",
+    "念一下",
+    "读一下",
+    "叫一声",
+    "唱两句",
+    "唱首",
+    "发条语音",
+    "发个语音",
+    "来段语音",
+)
+
+
+def _has_voice_intent(text: str) -> bool:
+    """Return True if the user message explicitly asks for a voice reply."""
+    lowered = text.lower()
+    return any(kw in lowered for kw in _VOICE_INTENT_KEYWORDS)
 
 _SYNTHETIC_PLACEHOLDERS: frozenset[str] = frozenset({"（戳了戳你）", "（回复了你）", "[图片]"})
 _AMBIENT_RING_MAXLEN = 25
@@ -517,6 +546,79 @@ def _render_status_snapshot(kernel: Any, session_key: str) -> str:
     return "\n".join(lines)
 
 
+def _build_turn_registered_tools(
+    kernel: Any,
+    *,
+    bus_proxy: Any,
+    turn_state: ChatTurnState,
+    msg: InboundMessage,
+    clean_text: str,
+    trigger_reason: str,
+    spawn_fn: Callable[[str, str, int | None], str],
+    cancel_fn: Callable[[str | None], int],
+) -> list[RegisteredTool]:
+    """Assemble per-turn `RegisteredTool` list for Fast Brain (`send_message`, optional `send_voice`, etc.)."""
+    if not kernel.enable_tools:
+        return []
+
+    turn_tools: list[RegisteredTool] = [
+        _bridge_tool_binding(
+            build_send_message_tool(
+                bus_proxy,
+                turn_state,
+                msg=msg,
+                stickers=kernel.stickers,
+                typing_delay_s=kernel.bubble_typing_delay_s,
+                compact_schema=kernel.compact_prompt,
+            )
+        )
+    ]
+    combined_query = f"{clean_text}\n{msg.reply_to_text}" if msg.reply_to_text else clean_text
+    if getattr(kernel, "always_expose_voice_tool", False) or _has_voice_intent(combined_query):
+        tts_engine = getattr(kernel, "_tts_engine", None)
+        if tts_engine is None:
+            tts_engine = NaiLongTtsEngine()
+            setattr(kernel, "_tts_engine", tts_engine)
+        turn_tools.append(
+            _bridge_tool_binding(
+                build_send_voice_tool(
+                    bus_proxy,
+                    turn_state,
+                    tts_engine=tts_engine,
+                    msg=msg,
+                    stickers=kernel.stickers,
+                    compact_schema=kernel.compact_prompt,
+                )
+            )
+        )
+    if trigger_reason in _SOFT_TRIGGER_REASONS:
+        turn_tools.append(_bridge_tool_binding(build_stay_silent_tool(turn_state)))
+    if kernel.memory is not None:
+        turn_tools.append(
+            _bridge_tool_binding(
+                build_remember_note_tool(
+                    kernel.memory,
+                    msg,
+                    admin_user_ids=kernel._admin_user_ids,
+                )
+            )
+        )
+    if kernel.web_search_enabled:
+        turn_tools.append(
+            _bridge_tool_binding(
+                build_web_search_tool(kernel._web_search_client, fast_mode=True)
+            )
+        )
+    if kernel.subagent_enabled and kernel.web_search_enabled:
+        turn_tools.append(
+            _bridge_tool_binding(build_spawn_subagent_tool(spawn_fn, msg=msg))
+        )
+        turn_tools.append(
+            _bridge_tool_binding(build_cancel_subagent_tool(cancel_fn))
+        )
+    return turn_tools
+
+
 __all__ = [
     "_AMBIENT_INJECT_LIMIT",
     "_AMBIENT_RING_MAXLEN",
@@ -529,15 +631,18 @@ __all__ = [
     "_SOFT_TRIGGER_REASONS",
     "_SYNTHETIC_PLACEHOLDERS",
     "_TurnEnvelope",
+    "_VOICE_INTENT_KEYWORDS",
     "_bridge_tool_binding",
     "_build_default_admin_router",
     "_build_reply_for_inbound",
+    "_build_turn_registered_tools",
     "_coalesce_debounced_items",
     "_coalesce_turn_envelopes",
     "_extract_orphaned_seqs_from_actor",
     "_format_sent_history",
     "_format_subagent_callback_prompt",
     "_has_cancel_steer_intent",
+    "_has_voice_intent",
     "_init_search_and_subagent_runner",
     "_pop_ready_debounce_batches",
     "_render_status_snapshot",

@@ -556,13 +556,55 @@ def build_sticker_action(
     return _wrap_target_frame(reply, segments, echo=echo)
 
 
+def build_voice_action(
+    reply: OutboundReply,
+    echo: str | None = None,
+) -> dict[str, Any] | None:
+    """构建 QQ 语音 (`record`) 或 NapCat 群 AI 声线 (`send_group_ai_record`) 发送动作帧。"""
+    if reply.voice_uri:
+        segments: list[dict[str, Any]] = [
+            {
+                "type": "record",
+                "data": {
+                    "file": reply.voice_uri,
+                },
+            }
+        ]
+        return _wrap_target_frame(reply, segments, echo=echo)
+
+    if reply.ai_voice_character and reply.chat_type == "group" and reply.text.strip():
+        frame: dict[str, Any] = {
+            "action": "send_group_ai_record",
+            "params": {
+                "group_id": reply.target_id,
+                "character": reply.ai_voice_character,
+                "text": reply.text.strip(),
+            },
+        }
+        if echo:
+            frame["echo"] = echo
+        return frame
+
+    return None
+
+
 def build_send_actions(
     reply: OutboundReply,
     *,
     sticker_file: str | None = None,
     echo: str | None = None,
 ) -> list[dict[str, Any]]:
-    """构建拟人化出站动作帧序列：纯文字 1 帧、纯表情包 1 帧、文字+表情包拆分为 2 帧。"""
+    """构建拟人化出站动作帧序列：支持纯文字、纯语音、纯表情包，以及文字/语音+表情包双帧拆分。"""
+    voice_frame = build_voice_action(reply, echo=echo)
+    if voice_frame is not None:
+        if not sticker_file:
+            return [voice_frame]
+        sticker_echo = f"{echo}-sticker" if echo else None
+        return [
+            voice_frame,
+            build_sticker_action(reply, sticker_file, echo=sticker_echo),
+        ]
+
     has_text = bool(reply.text.strip())
     if not sticker_file:
         if not has_text:
@@ -584,6 +626,7 @@ __all__ = [
     "build_send_action",
     "build_send_actions",
     "build_sticker_action",
+    "build_voice_action",
     "event_to_inbound",
     "extract_unresolved_forward_ids",
     "format_forward_nodes",

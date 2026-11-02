@@ -492,10 +492,15 @@ class NapCatWsAdapter:
                             await asyncio.sleep(self._sticker_delay_s)
                         act_echo = action.get("echo")
                         if isinstance(act_echo, str) and act_echo:
+                            is_voice = bool(reply.voice_uri or reply.ai_voice_character)
                             cached_text = (
-                                reply.text
-                                if (idx == 0 and reply.text.strip())
-                                else "[动画表情]"
+                                f"[语音：{reply.text}]"
+                                if (idx == 0 and is_voice)
+                                else (
+                                    reply.text
+                                    if (idx == 0 and reply.text.strip())
+                                    else "[动画表情]"
+                                )
                             )
                             self._record_outbound_echo(act_echo, cached_text)
                         await self._ws_send_json(ws, action)

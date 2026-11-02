@@ -18,6 +18,7 @@ from .kernel_turn_helpers import (
     _RecordingBusProxy,
     _bridge_tool_binding,
     _build_reply_for_inbound,
+    _build_turn_registered_tools,
     _format_sent_history,
     _format_subagent_callback_prompt,
     _summarize_web_search_outcome,
@@ -466,45 +467,16 @@ class KernelExecutionMixin:
             def _cancel_for_turn(task_id: str | None) -> int:
                 return self._subagent_runner.cancel(task_id, session_key=msg.session_key)
 
-            turn_tools: list[RegisteredTool] = []
-            if self.enable_tools:
-                turn_tools.append(
-                    _bridge_tool_binding(
-                        build_send_message_tool(
-                            bus_proxy,  # type: ignore[arg-type]
-                            turn_state,
-                            msg=msg,
-                            stickers=self.stickers,
-                            typing_delay_s=self.bubble_typing_delay_s,
-                            compact_schema=self.compact_prompt,
-                        )
-                    )
-                )
-                if trigger_reason in _SOFT_TRIGGER_REASONS:
-                    turn_tools.append(_bridge_tool_binding(build_stay_silent_tool(turn_state)))
-                if self.memory is not None:
-                    turn_tools.append(
-                        _bridge_tool_binding(
-                            build_remember_note_tool(
-                                self.memory,
-                                msg,
-                                admin_user_ids=self._admin_user_ids,
-                            )
-                        )
-                    )
-                if self.web_search_enabled:
-                    turn_tools.append(
-                        _bridge_tool_binding(
-                            build_web_search_tool(self._web_search_client, fast_mode=True)
-                        )
-                    )
-                if self.subagent_enabled and self.web_search_enabled:
-                    turn_tools.append(
-                        _bridge_tool_binding(build_spawn_subagent_tool(_spawn_for_turn, msg=msg))
-                    )
-                    turn_tools.append(
-                        _bridge_tool_binding(build_cancel_subagent_tool(_cancel_for_turn))
-                    )
+            turn_tools = _build_turn_registered_tools(
+                self,
+                bus_proxy=bus_proxy,
+                turn_state=turn_state,
+                msg=msg,
+                clean_text=clean_text,
+                trigger_reason=trigger_reason,
+                spawn_fn=_spawn_for_turn,
+                cancel_fn=_cancel_for_turn,
+            )
 
             def _before_step(step: int) -> str | None:
                 if step == 0:

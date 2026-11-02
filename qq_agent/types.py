@@ -150,6 +150,8 @@ class OutboundReply:
     at_user_id: int | None = None
     correlation_id: str = ""
     sticker_id: str | None = None
+    voice_uri: str | None = None
+    ai_voice_character: str | None = None
 
     def to_json_bytes(self) -> bytes:
         return json.dumps(asdict(self), ensure_ascii=False, separators=(",", ":")).encode("utf-8")
@@ -166,6 +168,18 @@ class OutboundReply:
             if isinstance(sticker_raw, str) and sticker_raw.strip()
             else None
         )
+        voice_raw = data.get("voice_uri")
+        voice_uri = (
+            str(voice_raw).strip()
+            if isinstance(voice_raw, str) and voice_raw.strip()
+            else None
+        )
+        ai_char_raw = data.get("ai_voice_character")
+        ai_voice_character = (
+            str(ai_char_raw).strip()
+            if isinstance(ai_char_raw, str) and ai_char_raw.strip()
+            else None
+        )
         return cls(
             chat_type=chat_type,
             target_id=int(data["target_id"]),
@@ -174,6 +188,8 @@ class OutboundReply:
             at_user_id=int(at_raw) if at_raw is not None else None,
             correlation_id=str(data.get("correlation_id", "")),
             sticker_id=sticker_id,
+            voice_uri=voice_uri,
+            ai_voice_character=ai_voice_character,
         )
 
 
