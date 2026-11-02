@@ -192,6 +192,18 @@
 - **建议**：暴露跨进程 `SandboxToolExecution` SABI 服务面（按会话/子 Agent `fiber_id` 绑定衰减后的出网域名/字节配额 Capability，在 `nlos-wasm-sandbox` 内执行并返回净化摘要）
 - **严重度**：高｜**状态**：当前由 Python DNS 解析级 SSRF 防火墙、硬超时字节上限与 `depth=1` 只读子 Agent 护栏过渡（待沙箱 SABI 就绪后迁入 OS 级双层强沙箱）
 
+## L-015 | channel 单帧 payload 上限（~64KB）迫使大语音 base64 出站走应用侧落盘中转
+
+- **日期**：2026-11-02（TTS 语音管线联调）
+- **场景**：`send_voice` 工具将 F5-TTS 合成 WAV 以 `base64://` URI 装入 `OutboundReply.voice_uri`，经 `nlos.sabi.ChannelControl` enqueue 跨进程发送
+- **症状**：稍长的语音（合成 WAV base64 后 >16KB）会逼近乃至超过单帧 ~64KB payload 上限，存在帧超限发送失败或被截断的风险
+- **根因**：`nlos-channel` 单条消息 payload 无分帧/大载荷传输原语，帧大小约束由应用侧自行保证
+- **上游位置**：`crates/nlos-channel`（payload 大小上限与投递路径）
+- **影响**：一切富媒体出站（语音、大图 base64）都必须在应用侧落盘再由 adapter 回灌，平添 IO、缓存目录清理与两端协议约定职责
+- **证据**：`qq_agent/llmos_bus.py` `_spill_large_voice_uri` / `_rehydrate_voice_uri`（commit `dd4b8e2`）
+- **建议**：channel 侧提供大载荷分帧重组传输，或基于 Capability 的文件句柄/共享路径传递原语
+- **严重度**：低-中｜**状态**：应用侧已绕过——>16KB 语音 URI 落盘 `data/tts/cache`，adapter 收帧后回灌还原为 `base64://` 发送（用后即删）
+
 ---
 
 ## Wave W4 反夹生演进锚点对照表（Python 过渡层 → llmos 权威接管面）
@@ -207,3 +219,4 @@
 | `L-012` | `load_nlos_sdk` 只读 `sys.path` 注入与 `ensure_local_venv_pth`（`qq_agent/llmos_sdk.py`） | `sdk/python/pyproject.toml`（自包含打包 `gen/python/nlos/sabi/v1/*_pb2.py` 的正式 `nlos-sdk` wheel） | 删除 `sys.path` 动态注入与 `.pth` 引导逻辑，改为 `pyproject.toml` 标准版本化依赖声明 |
 | `L-013` | `OpenAICompatProvider` 直连 HTTP 模型推理 + 业务侧读取明文 `LLM_API_KEY`（`qq_agent/provider.py`） | `crates/nlos-driver-llm-http`（W77-PRE-B `LlmEnforcementShim` + `glm-keypool` + 五维预算预扣/实扣 SABI 服务面） | **彻底删除** Python 侧明文 `LLM_API_KEY` 持有、HTTP 重试传输层及本地 `guardrails.sqlite3` |
 | `L-014` | Python 应用层 DNS SSRF 防火墙、抓取字节截断与 `depth=1` 只读子 Agent 护栏 | `crates/nlos-capability` + `crates/nlos-wasm-sandbox`（W80 双层强沙箱跨进程委托执行 SABI 服务面） | 删除 Python 进程内直接外网抓取客户端，将 `web_search` / `fetch_webpage` 全部委托至 OS/Wasm 强沙箱执行 |
+| `L-015` | 出站前 `_spill_large_voice_uri` 落盘 + adapter `_rehydrate_voice_uri` 回灌（`qq_agent/llmos_bus.py`） | `crates/nlos-channel`（大载荷分帧重组或 Capability 文件句柄/共享路径传递原语） | 删除语音落盘缓存与回灌逻辑，`OutboundReply.voice_uri` 直接携带大载荷经 channel 原语传输 |
