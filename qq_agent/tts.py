@@ -6,7 +6,9 @@ import base64
 from collections.abc import Collection
 from dataclasses import dataclass
 import logging
+import os
 from pathlib import Path
+import subprocess
 from typing import Any
 
 import httpx
@@ -27,9 +29,43 @@ from qq_agent.types import ChatType, InboundMessage, OutboundReply, ToolDef
 logger = logging.getLogger(__name__)
 
 DEFAULT_NAILONG_MODEL_DIR = Path("data/tts/nailong")
+DEFAULT_NAILONG_PROMPT_TEXT = "啊，我才不要这样，好害羞啊。"
 DEFAULT_GPT_SOVITS_URL = "http://127.0.0.1:9880"
 DEFAULT_NAPCAT_VOICE_CHARACTER = "lucy-voice-laibixiaoxin"
 MAX_VOICE_TEXT_CHARS = 120
+_LOCAL_TTS_PYTHON_CANDIDATES: tuple[Path, ...] = (
+    Path(r"D:\llmos\media\.venv-tts\Scripts\python.exe"),
+    Path(r"D:\AI\ComfyUI\python_embeded\python.exe"),
+)
+_LOCAL_TTS_SPAWN_ATTEMPTED = False
+
+
+def ensure_local_tts_server_running(base_url: str = DEFAULT_GPT_SOVITS_URL) -> bool:
+    """Auto-start `qq_agent.local_tts_server` on `127.0.0.1:9880` if local GPU TTS python env exists."""
+    global _LOCAL_TTS_SPAWN_ATTEMPTED
+    if _LOCAL_TTS_SPAWN_ATTEMPTED or os.environ.get("PYTEST_CURRENT_TEST"):
+        return False
+    if base_url.rstrip("/") != DEFAULT_GPT_SOVITS_URL:
+        return False
+    _LOCAL_TTS_SPAWN_ATTEMPTED = True
+    repo_root = Path(__file__).resolve().parents[1]
+    script_path = Path(__file__).resolve().parent / "local_tts_server.py"
+    for py_bin in _LOCAL_TTS_PYTHON_CANDIDATES:
+        if py_bin.is_file() and script_path.is_file():
+            try:
+                creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+                subprocess.Popen(
+                    [str(py_bin), "-P", str(script_path), "--port", "9880"],
+                    cwd=str(repo_root),
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                    creationflags=creationflags,
+                )
+                logger.info("Spawned local GPU NaiLong TTS server via %s", py_bin)
+                return True
+            except Exception as exc:
+                logger.debug("Failed to spawn local TTS server via %s: %s", py_bin, exc)
+    return False
 
 
 @dataclass(slots=True, frozen=True)
@@ -91,10 +127,10 @@ class NaiLongTtsEngine:
         *,
         model_dir: Path | str = DEFAULT_NAILONG_MODEL_DIR,
         gpt_sovits_url: str = DEFAULT_GPT_SOVITS_URL,
-        prompt_text: str = "我是奶龙，宇宙无敌第一可爱",
+        prompt_text: str = DEFAULT_NAILONG_PROMPT_TEXT,
         prompt_lang: str = "zh",
         fallback_character: str = DEFAULT_NAPCAT_VOICE_CHARACTER,
-        timeout_s: float = 8.0,
+        timeout_s: float = 20.0,
         transport: httpx.AsyncBaseTransport | None = None,
     ) -> None:
         self._assets = resolve_nailong_assets(model_dir)
@@ -168,6 +204,8 @@ class NaiLongTtsEngine:
                             backend_used="local_gpt_sovits_nailong",
                         )
             except Exception as exc:
+                if self._transport is None:
+                    ensure_local_tts_server_running(self._base_url)
                 logger.debug(
                     "Local GPT-SoVITS NaiLong endpoint (%s) unavailable (%s); falling back to NapCat AI voice",
                     self._base_url,

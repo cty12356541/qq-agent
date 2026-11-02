@@ -5,6 +5,8 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import Awaitable
+import dataclasses
+import hashlib
 import inspect
 import logging
 from pathlib import Path
@@ -28,6 +30,38 @@ R = TypeVar("R")
 
 CONSUMER_FIBER_GENERATION: int = 1
 MAX_REGISTERED_SEQ_CACHE: int = 4096
+_VOICE_CACHE_DIR = Path(__file__).resolve().parents[1] / "data" / "tts" / "cache"
+
+
+def _spill_large_voice_uri(reply: OutboundReply) -> OutboundReply:
+    """Spill large `base64://` voice payloads (>16KB) to disk so IPC stays well under 64KB."""
+    uri = reply.voice_uri
+    if not uri or len(uri) <= 16384 or not uri.startswith("base64://"):
+        return reply
+    try:
+        _VOICE_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+        digest = hashlib.sha1(uri.encode("ascii", errors="ignore")).hexdigest()[:20]
+        blob_path = (_VOICE_CACHE_DIR / f"voice_{digest}.b64").resolve()
+        blob_path.write_text(uri, encoding="ascii")
+        return dataclasses.replace(reply, voice_uri=f"localb64://{blob_path}")
+    except Exception:
+        return reply
+
+
+def _rehydrate_voice_uri(reply: OutboundReply) -> OutboundReply:
+    """Restore `localb64://` spilled voice payload back into `base64://` in the adapter."""
+    uri = reply.voice_uri
+    if not uri or not uri.startswith("localb64://"):
+        return reply
+    blob_path = Path(uri[len("localb64://") :])
+    try:
+        content = blob_path.read_text(encoding="ascii").strip()
+        blob_path.unlink(missing_ok=True)
+        if content.startswith("base64://"):
+            return dataclasses.replace(reply, voice_uri=content)
+    except Exception:
+        pass
+    return reply
 
 
 def _try_parse_int(val: Any) -> int | None:
@@ -491,6 +525,7 @@ class LlmosChannelBus:
                 self._last_inbound_compact_seq = sequence
 
     async def publish_outbound(self, reply: OutboundReply) -> int:
+        reply = _spill_large_voice_uri(reply)
         payload = reply.to_json_bytes()
         session_key = (
             f"group:{reply.target_id}"
@@ -532,7 +567,7 @@ class LlmosChannelBus:
                 lambda c: c.receive(outbound_rec.channel_id, limit=limit),
             )
         return [
-            (int(entry.sequence), OutboundReply.from_json_bytes(bytes(entry.payload)))
+            (int(entry.sequence), _rehydrate_voice_uri(OutboundReply.from_json_bytes(bytes(entry.payload))))
             for entry in entries
         ]
 

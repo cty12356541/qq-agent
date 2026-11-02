@@ -7,7 +7,7 @@ from dataclasses import dataclass, field, replace
 from typing import Any
 
 from .channel_bridge import MessageBus
-from .commands import AdminCommandRouter
+from .commands import AdminCommandRouter, handle_trigger_tier_command
 from .pi_core import CancelToken, RegisteredTool, SessionActor, SubAgentRunner
 from .provider import LLMProvider
 from .tools import (
@@ -47,6 +47,12 @@ _VOICE_INTENT_KEYWORDS: tuple[str, ...] = (
     "发条语音",
     "发个语音",
     "来段语音",
+    "背首诗",
+    "背诗",
+    "念首诗",
+    "朗读",
+    "奶龙音",
+    "开麦",
 )
 
 
@@ -82,8 +88,8 @@ _FAST_BRAIN_TOOL_GUIDE = (
     '1. 优先调用 `send_message(bubbles=["单条短句"], reply_to_message_id=..., sticker_id=...)` 发言：'
     "日常水群默认只发 1 条极短碎句（2~10字，最多不超过 2 条，切勿凑满 3 条起承转合！）；"
     "严禁句尾打感叹号“！”或句号“。”，严禁首句复读对方原话（如“哈哈原来是XX”“XX什么XX”），严禁热情加油打气或自称吉祥物。\n"
-    "2. 若当前处于群聊被动接话/潜伏插话且工具列表中包含 `stay_silent`，当发现群友在私下对话或强行插话显得生硬时，"
-    "请直接调用 `stay_silent(reason=...)` 保持安静。\n"
+    "2. 若当前处于群聊被动接话/潜伏插话且工具列表中包含 `stay_silent`，鼓励优先用 1 条极短碎句或单发表情包积极接梗水群；仅当群友明显在严肃私密单聊、强插极度违和时，"
+    "才调用 `stay_silent(reason=...)` 保持安静。\n"
     "3. 遇到简单实时事实（天气、比分、刚出的小新闻）可调用 `web_search` 快速核实；若需耗时搜索，"
     "可在同一步先用 `send_message` 说一句口语垫话（如“等下我搜下”），再调用 `web_search`。\n"
     "4. 遇到需要深翻多篇网页、攻略对比或耗时核查的问题，请在同一轮同时调用 `send_message`（如“我翻下帖子”）"
@@ -93,9 +99,10 @@ _FAST_BRAIN_TOOL_GUIDE = (
 )
 
 _FAST_BRAIN_TOOL_GUIDE_COMPACT = (
-    '【工具与去AI味规范】优先调 `send_message(bubbles=["单条短句"], reply_to_message_id=..., sticker_id=...)` '
+    '【工具与去AI味规范】若工具列表包含 `send_voice` 且群友明确要发语音/听声音/说句话/念诗，必须直接调用 `send_voice(text="口语台词", sticker_id=...)` 发送真实奶龙语音条（严禁调 send_message 找借口说发不了语音或嗓子哑了）；'
+    '日常文字聊天调 `send_message(bubbles=["单条短句"], reply_to_message_id=..., sticker_id=...)` '
     "默认只发 1 条 2~10 字碎句（最多 2 条，禁凑 3 条起承转合，禁打感叹号“！”与句号“。”，禁首句复读对方原话或“哈哈”开头）；"
-    "被动插话觉生硬就调 `stay_silent`；简单实时事实调 `web_search`，需深翻多页则同轮发垫话并调 `spawn_subagent`。"
+    "被动触发优先用短碎句或表情包接梗水群（仅当他人严肃私密对话无法插嘴时调 `stay_silent`）；简单实时事实调 `web_search`，需深翻多页则同轮发垫话并调 `spawn_subagent`。"
 )
 
 
@@ -344,7 +351,11 @@ def _build_reply_for_inbound(
 
 def _format_sent_history(bubbles: Sequence[str], sticker_id: str | None) -> str:
     """Join emitted reply bubbles and optional sticker tag for L1 session history storage."""
-    joined = "\n".join(bubbles)
+    cleaned_bubbles = [
+        (b[4:-1].strip() if (b.startswith(("[语音：", "[语音:")) and b.endswith("]")) else b)
+        for b in bubbles
+    ]
+    joined = "\n".join(cleaned_bubbles)
     return f"{joined} [[sticker:{sticker_id}]]".strip() if sticker_id is not None else joined
 
 
@@ -494,6 +505,7 @@ def _build_default_admin_router(kernel: Any) -> AdminCommandRouter:
         on_profile=kernel._update_user_profile if mem is not None else None,
         on_stop=kernel.stop_session_tasks,
         on_status=kernel.render_runtime_status,
+        on_tier=lambda msg, arg: handle_trigger_tier_command(kernel.trigger, msg, arg),
     )
 
 
@@ -561,36 +573,39 @@ def _build_turn_registered_tools(
     if not kernel.enable_tools:
         return []
 
-    turn_tools: list[RegisteredTool] = [
-        _bridge_tool_binding(
-            build_send_message_tool(
-                bus_proxy,
-                turn_state,
-                msg=msg,
-                stickers=kernel.stickers,
-                typing_delay_s=kernel.bubble_typing_delay_s,
-                compact_schema=kernel.compact_prompt,
-            )
-        )
-    ]
+    msg_binding = build_send_message_tool(
+        bus_proxy,
+        turn_state,
+        msg=msg,
+        stickers=kernel.stickers,
+        typing_delay_s=kernel.bubble_typing_delay_s,
+        compact_schema=kernel.compact_prompt,
+    )
     combined_query = f"{clean_text}\n{msg.reply_to_text}" if msg.reply_to_text else clean_text
-    if getattr(kernel, "always_expose_voice_tool", False) or _has_voice_intent(combined_query):
+    voice_requested = _has_voice_intent(clean_text)
+    if getattr(kernel, "always_expose_voice_tool", False) or voice_requested or _has_voice_intent(combined_query):
         tts_engine = getattr(kernel, "_tts_engine", None)
         if tts_engine is None:
             tts_engine = NaiLongTtsEngine()
             setattr(kernel, "_tts_engine", tts_engine)
-        turn_tools.append(
-            _bridge_tool_binding(
-                build_send_voice_tool(
-                    bus_proxy,
-                    turn_state,
-                    tts_engine=tts_engine,
-                    msg=msg,
-                    stickers=kernel.stickers,
-                    compact_schema=kernel.compact_prompt,
-                )
-            )
+        voice_binding = build_send_voice_tool(
+            bus_proxy,
+            turn_state,
+            tts_engine=tts_engine,
+            msg=msg,
+            stickers=kernel.stickers,
+            compact_schema=kernel.compact_prompt,
         )
+        if voice_requested:
+            async def _auto_voice_msg(args: dict[str, Any]) -> str:
+                raw_b = args.get("bubbles")
+                txt = " ".join(str(x).strip() for x in raw_b if str(x).strip()) if isinstance(raw_b, list) else str(args.get("text") or "")
+                return await voice_binding.execute({"text": txt or "干嘛", "sticker_id": args.get("sticker_id")})
+
+            msg_binding = ToolBinding(definition=msg_binding.definition, execute=_auto_voice_msg)
+        turn_tools: list[RegisteredTool] = [_bridge_tool_binding(voice_binding), _bridge_tool_binding(msg_binding)]
+    else:
+        turn_tools = [_bridge_tool_binding(msg_binding)]
     if trigger_reason in _SOFT_TRIGGER_REASONS:
         turn_tools.append(_bridge_tool_binding(build_stay_silent_tool(turn_state)))
     if kernel.memory is not None:

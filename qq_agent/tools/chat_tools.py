@@ -357,8 +357,8 @@ def build_stay_silent_tool(turn_state: ChatTurnState) -> ToolBinding:
     definition = ToolDef(
         name="stay_silent",
         description=(
-            "当群聊话题与你无关、群友之间正在私下对话、或接话会显得生硬打扰时，"
-            "调用此工具保持安静不发言。"
+            "仅当群友之间正在进行严肃私密单聊、或当前内容完全无法用短句/表情包接梗时，"
+            "调用此工具保持安静不发言（日常水群、闲聊、晒图、发表情包请优先用 send_message 互动）。"
         ),
         input_schema={
             "type": "object",
