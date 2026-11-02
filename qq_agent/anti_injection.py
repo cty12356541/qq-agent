@@ -84,9 +84,12 @@ _OUTBOUND_PROMPT_LEAK_RE = re.compile(
     r"|【安全与防注入铁律"
     r"|【防注入铁律】"
     r"|【防注入动态反制"
-    r"|【对话与工具使用规范（Use Chat as Tool）】)",
+    r"|【对话与工具使用规范（Use Chat as Tool)",
     flags=re.IGNORECASE,
 )
+
+_LEADING_FAKE_LAUGH_RE = re.compile(r"^哈哈+[，,！!\s]*(?=原来|你|这|没|别|那)")
+_TRAILING_EXCLAMATION_RE = re.compile(r"[！!~～]+$")
 
 
 def classify_time_of_day_phase(hour: int) -> str:
@@ -223,12 +226,19 @@ def sanitize_outbound_bubble(
     *,
     fallback_text: str = "？你在套什么话）",
 ) -> str:
-    """Prevent accidental outbound leakage of internal `<untrusted_*>` XML tags or system anti-injection headers."""
+    """Prevent accidental outbound leakage of internal `<untrusted_*>` XML tags and strip mascot AI cliches."""
     if not text or not text.strip():
         return text
     if _OUTBOUND_PROMPT_LEAK_RE.search(text):
         return fallback_text
-    return text
+
+    cleaned = text.replace("本奶娃", "我").replace("有何吩咐", "干嘛").replace("待命中", "").strip()
+    cleaned = _LEADING_FAKE_LAUGH_RE.sub("", cleaned).strip()
+    if len(cleaned) <= 36 and "\n" not in cleaned:
+        stripped_excl = _TRAILING_EXCLAMATION_RE.sub("", cleaned).strip()
+        if stripped_excl:
+            cleaned = stripped_excl
+    return cleaned or text
 
 
 __all__ = [
