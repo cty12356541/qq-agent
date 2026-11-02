@@ -250,7 +250,7 @@ class AgentKernel(KernelExecutionMixin):
         if isinstance(item, _TurnEnvelope):
             if item.trigger_reason in _SOFT_TRIGGER_REASONS:
                 self._dropped_soft_count += 1
-                self._record_ambient_group_line(item.msg)
+                self._record_ambient_group_line(item.msg, item.trigger_reason)
             if item.seqs and not (self._closing and item.trigger_reason not in _SOFT_TRIGGER_REASONS):
                 self._schedule_bg_task(self._mark_seqs_done(item.seqs))
             return
@@ -292,11 +292,7 @@ class AgentKernel(KernelExecutionMixin):
             self._debounce_buckets.pop(k, None)
         return cleared
 
-    def _observe_group_public_cues(
-        self,
-        msg: InboundMessage,
-        text_override: str | None = None,
-    ) -> None:
+    def _observe_group_public_cues(self, msg: InboundMessage, text_override: str | None = None) -> None:
         if self.memory is None or msg.chat_type != "group":
             return
         source = text_override if text_override is not None else msg.text
@@ -304,9 +300,11 @@ class AgentKernel(KernelExecutionMixin):
         if cues:
             self.memory.observe_public_traits(msg.user_id, msg.sender_name, cues)
 
-    def _record_ambient_group_line(self, msg: InboundMessage) -> None:
+    def _record_ambient_group_line(self, msg: InboundMessage, refund_reason: str = "") -> None:
         if msg.chat_type != "group":
             return
+        if refund_reason and hasattr(self.trigger, "refund_soft_trigger"):
+            self.trigger.refund_soft_trigger(msg.group_id, msg.user_id, reason=refund_reason)
         self._observe_group_public_cues(msg)
         self._get_ambient_buffer(msg.session_key).record_message(msg)
 

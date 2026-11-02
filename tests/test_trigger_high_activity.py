@@ -364,3 +364,82 @@ def test_proactive_pity_every_6_random_22_percent_and_12s_cooldown() -> None:
     assert rand_trigger.evaluate(
         _msg("", image_urls=("https://img.example/cat.jpg",))
     ) == TriggerDecision(True, "group_proactive_random", "[图片]")
+
+
+def test_soft_trigger_refund_on_stay_silent_and_high_activity_config_defaults() -> None:
+    from qq_agent.config import AgentConfig
+
+    cfg = AgentConfig.from_env(env_file=None, environ={})
+    assert cfg.group_followup_window_s == 90.0
+    assert cfg.group_followup_max_turns == 8
+    assert cfg.group_topic_prob == 0.88
+    assert cfg.group_proactive_prob == 0.40
+    assert cfg.group_proactive_every_n == 4
+    assert cfg.group_proactive_cooldown_s == 5.0
+
+    now = 100.0
+    trigger = RuleTrigger(
+        bot_qq=BOT_QQ,
+        followup_window_s=90.0,
+        max_followup_turns=2,
+        topic_prob=0.88,
+        proactive_prob=0.0,
+        proactive_every_n=4,
+        proactive_cooldown_s=5.0,
+        clock=lambda: now,
+        rng=lambda: 0.10,
+    )
+
+    # 1) Topic trigger that ends in stay_silent refunds cooldown & increments untriggered count
+    assert trigger.evaluate(_msg("今晚打窝窝屎吗")) == TriggerDecision(
+        True, "group_topic_interest", "今晚打窝窝屎吗"
+    )
+    trigger.refund_soft_trigger(GROUP_ID, USER_A, reason="group_topic_interest")
+
+    # Only 1.0s later (< 5.0s cooldown): because cooldown was refunded, topic trigger fires immediately!
+    now = 101.0
+    assert trigger.evaluate(_msg("上号开黑")) == TriggerDecision(
+        True, "group_topic_interest", "上号开黑"
+    )
+    trigger.refund_soft_trigger(GROUP_ID, USER_A, reason="group_topic_interest")
+
+    # 2) Two silent topic turns counted as 2 untriggered messages; 2 more ordinary messages hit pity=4!
+    now = 102.0
+    assert trigger.evaluate(_msg("普通闲聊3")) == TriggerDecision(False, "not_triggered")
+    now = 103.0
+    assert trigger.evaluate(_msg("普通闲聊4")) == TriggerDecision(
+        True, "group_proactive_pity", "普通闲聊4"
+    )
+
+    # If pity turn also calls stay_silent, the very next message (msg #5) immediately triggers pity again!
+    trigger.refund_soft_trigger(GROUP_ID, USER_A, reason="group_proactive_pity")
+    now = 104.0
+    assert trigger.evaluate(_msg("普通闲聊5继续保底")) == TriggerDecision(
+        True, "group_proactive_pity", "普通闲聊5继续保底"
+    )
+    trigger.record_bot_reply(GROUP_ID, USER_A, now=now)
+
+    # 3) Follow-up window: silent follow-up turn does not consume max_followup_turns quota
+    now = 110.0
+    assert trigger.evaluate(_msg("追问1", user_id=USER_A)) == TriggerDecision(
+        True, "group_followup_window", "追问1"
+    )
+    trigger.refund_soft_trigger(GROUP_ID, USER_A, reason="group_followup_window")
+
+    # Still has full 2 follow-up turns left
+    now = 115.0
+    assert trigger.evaluate(_msg("追问1重发", user_id=USER_A)) == TriggerDecision(
+        True, "group_followup_window", "追问1重发"
+    )
+    trigger.record_bot_reply(GROUP_ID, USER_A, now=now)
+    now = 120.0
+    assert trigger.evaluate(_msg("追问2", user_id=USER_A)) == TriggerDecision(
+        True, "group_followup_window", "追问2"
+    )
+    trigger.record_bot_reply(GROUP_ID, USER_A, now=now)
+    now = 125.0
+    assert trigger.evaluate(_msg("超出2轮追问上限", user_id=USER_A)) == TriggerDecision(
+        False, "not_triggered"
+    )
+
+

@@ -127,6 +127,33 @@ def _parse_int_set(raw: str | None, field_name: str) -> set[int]:
     return items
 
 
+_VALID_TRIGGER_TIERS: frozenset[str] = frozenset({"high", "medium", "low", "passive"})
+
+
+def _parse_group_tiers(raw: str | None, field_name: str) -> dict[int, str]:
+    if raw is None:
+        return {}
+    mapping: dict[int, str] = {}
+    for part in raw.split(","):
+        token = part.strip()
+        if not token:
+            continue
+        if ":" not in token:
+            raise ValueError(f"Invalid group tier item {token!r} in {field_name} (expected group_id:tier)")
+        gid_raw, tier_raw = token.split(":", 1)
+        try:
+            gid = int(gid_raw.strip())
+        except ValueError as exc:
+            raise ValueError(f"Invalid group_id {gid_raw!r} in {field_name}") from exc
+        tier = tier_raw.strip().lower()
+        if tier not in _VALID_TRIGGER_TIERS:
+            raise ValueError(
+                f"Invalid trigger tier {tier_raw!r} in {field_name} (expected one of {sorted(_VALID_TRIGGER_TIERS)})"
+            )
+        mapping[gid] = tier
+    return mapping
+
+
 def _parse_float_tuple(
     raw: str | None,
     default: tuple[float, ...],
@@ -198,11 +225,13 @@ class AgentConfig:
 
     private_debounce_s: float = 0.30
     group_debounce_s: float = 0.40
-    group_followup_window_s: float = 60.0
-    group_proactive_prob: float = 0.22
-    group_topic_prob: float = 0.65
-    group_proactive_every_n: int = 6
-    group_proactive_cooldown_s: float = 12.0
+    group_followup_window_s: float = 90.0
+    group_followup_max_turns: int = 8
+    group_proactive_prob: float = 0.40
+    group_topic_prob: float = 0.88
+    group_proactive_every_n: int = 4
+    group_proactive_cooldown_s: float = 5.0
+    group_trigger_tiers: dict[int, str] = field(default_factory=dict)
 
     agent_max_steps: int = 3
     agent_turn_timeout_s: float = 35.0
@@ -377,19 +406,28 @@ class AgentConfig:
                 get_raw("QQ_GROUP_DEBOUNCE_S"), 0.40, "QQ_GROUP_DEBOUNCE_S"
             ),
             group_followup_window_s=_parse_float_with_default(
-                get_raw("QQ_GROUP_FOLLOWUP_WINDOW_S"), 60.0, "QQ_GROUP_FOLLOWUP_WINDOW_S"
+                get_raw("QQ_GROUP_FOLLOWUP_WINDOW_S"), 90.0, "QQ_GROUP_FOLLOWUP_WINDOW_S"
+            ),
+            group_followup_max_turns=max(
+                1,
+                _parse_int_with_default(
+                    get_raw("QQ_GROUP_FOLLOWUP_MAX_TURNS"), 8, "QQ_GROUP_FOLLOWUP_MAX_TURNS"
+                ),
             ),
             group_proactive_prob=_parse_float_with_default(
-                get_raw("QQ_GROUP_PROACTIVE_PROB"), 0.22, "QQ_GROUP_PROACTIVE_PROB"
+                get_raw("QQ_GROUP_PROACTIVE_PROB"), 0.40, "QQ_GROUP_PROACTIVE_PROB"
             ),
             group_topic_prob=_parse_float_with_default(
-                get_raw("QQ_GROUP_TOPIC_PROB"), 0.65, "QQ_GROUP_TOPIC_PROB"
+                get_raw("QQ_GROUP_TOPIC_PROB"), 0.88, "QQ_GROUP_TOPIC_PROB"
             ),
             group_proactive_every_n=_parse_int_with_default(
-                get_raw("QQ_GROUP_PROACTIVE_EVERY_N"), 6, "QQ_GROUP_PROACTIVE_EVERY_N"
+                get_raw("QQ_GROUP_PROACTIVE_EVERY_N"), 4, "QQ_GROUP_PROACTIVE_EVERY_N"
             ),
             group_proactive_cooldown_s=_parse_float_with_default(
-                get_raw("QQ_GROUP_PROACTIVE_COOLDOWN_S"), 12.0, "QQ_GROUP_PROACTIVE_COOLDOWN_S"
+                get_raw("QQ_GROUP_PROACTIVE_COOLDOWN_S"), 5.0, "QQ_GROUP_PROACTIVE_COOLDOWN_S"
+            ),
+            group_trigger_tiers=_parse_group_tiers(
+                get_raw("QQ_GROUP_TRIGGER_TIERS"), "QQ_GROUP_TRIGGER_TIERS"
             ),
             agent_max_steps=_parse_int_with_default(
                 get_raw("QQ_AGENT_MAX_STEPS"), 3, "QQ_AGENT_MAX_STEPS"

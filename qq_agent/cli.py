@@ -223,7 +223,7 @@ def _run_dry_check(cfg: AgentConfig) -> int:
         f"thinking={'ON' if cfg.subagent_enable_thinking else 'OFF'}, max_steps={cfg.subagent_max_steps}, "
         f"concurrency={cfg.subagent_max_concurrent}/per_group={cfg.subagent_max_per_session}, timeout={cfg.subagent_timeout_s}s)\n"
         f"联网搜索   : {'ON' if cfg.web_search_enabled else 'OFF'} ({search_engine_desc}, timeout={cfg.web_search_timeout_s}s, fact_ttl={cfg.fact_cache_ttl_s:.0f}s)\n"
-        f"群聊触发率 : 追问窗口={cfg.group_followup_window_s}s, 兴趣词={cfg.group_topic_prob:.0%}, 随机插话={cfg.group_proactive_prob:.0%}, 保底={cfg.group_proactive_every_n}条\n"
+        f"群聊触发率 : 追问窗口={cfg.group_followup_window_s}s({cfg.group_followup_max_turns}轮), 兴趣词={cfg.group_topic_prob:.0%}, 随机插话={cfg.group_proactive_prob:.0%}, 保底={cfg.group_proactive_every_n}条, 冷却={cfg.group_proactive_cooldown_s}s, 分级={cfg.group_trigger_tiers or '默认'}\n"
         f"输入防抖   : 私聊={cfg.private_debounce_s}s, 群聊={cfg.group_debounce_s}s, 气泡打字延迟={cfg.bubble_typing_delay_s}s\n"
         f"表情包图库 : 已就绪 {sticker_count} 张（目录: {cfg.stickers_dir}）\n"
         f"LLM 接口   : {cfg.llm_base_url} (model={cfg.llm_model}, vision={'ON' if cfg.enable_vision else 'OFF'}@{cfg.vision_max_side}px, API Key={key_status})\n"
@@ -310,10 +310,12 @@ async def _enter_brain_stack(
         bot_qq=cfg.bot_qq,
         allowed_group_ids=cfg.allowed_group_ids,
         followup_window_s=cfg.group_followup_window_s,
+        max_followup_turns=cfg.group_followup_max_turns,
         topic_prob=cfg.group_topic_prob,
         proactive_prob=cfg.group_proactive_prob,
         proactive_every_n=cfg.group_proactive_every_n,
         proactive_cooldown_s=cfg.group_proactive_cooldown_s,
+        group_tiers=cfg.group_trigger_tiers,
     )
     provider = await stack.enter_async_context(_create_provider(cfg))
     return persona, stickers, sessions, memory, guardrails, trigger, provider

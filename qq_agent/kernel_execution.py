@@ -181,6 +181,7 @@ class KernelExecutionMixin:
         user_id: int,
         include_tool_guide: bool,
         query_text: str = "",
+        sender_name: str = "",
     ) -> str:
         sys_prompt = self.persona.render_system_prompt(compact=self.compact_prompt)
         if self.memory is not None:
@@ -209,7 +210,7 @@ class KernelExecutionMixin:
             )
             sys_prompt = f"{sys_prompt}\n\n{tool_guide}"
 
-        inj_signals = detect_injection_signals(query_text)
+        inj_signals = detect_injection_signals(query_text, sender_name)
         if inj_signals:
             anchor = build_dynamic_injection_anchor(
                 self.persona.current().name,
@@ -418,6 +419,7 @@ class KernelExecutionMixin:
             user_id=msg.user_id,
             include_tool_guide=self.enable_tools,
             query_text=(f"{clean_text}\n{msg.reply_to_text}" if msg.reply_to_text else clean_text),
+            sender_name=msg.sender_name,
         )
         sys_msg = ChatMessage(role="system", content=sys_prompt)
         history = self.sessions.get_window(msg.session_key)
@@ -544,7 +546,7 @@ class KernelExecutionMixin:
                 and not turn_state.sent_bubbles
                 and turn_state.last_sticker_id is None
             ):
-                self._record_ambient_group_line(msg)  # type: ignore[attr-defined]
+                self._record_ambient_group_line(msg, trigger_reason)  # type: ignore[attr-defined]
                 return None, pinned_seq_claimed
 
             # 2) Cancelled mid-turn via `/stop`, `cancel_active` steering, or QoS hard preemption
@@ -560,7 +562,7 @@ class KernelExecutionMixin:
                         assistant_content=hist_partial,
                     )
                 elif trigger_reason in _SOFT_TRIGGER_REASONS:
-                    self._record_ambient_group_line(msg)  # type: ignore[attr-defined]
+                    self._record_ambient_group_line(msg, trigger_reason)  # type: ignore[attr-defined]
                 return (bus_proxy.published[-1] if bus_proxy.published else None), pinned_seq_claimed
 
             # 3) Model streamed 1~3 bubbles via `send_message` tool
@@ -595,7 +597,7 @@ class KernelExecutionMixin:
                 trigger_reason in _SOFT_TRIGGER_REASONS
                 and raw_final.lower() in _SILENT_FALLBACK_TOKENS
             ):
-                self._record_ambient_group_line(msg)  # type: ignore[attr-defined]
+                self._record_ambient_group_line(msg, trigger_reason)  # type: ignore[attr-defined]
                 return None, pinned_seq_claimed
 
             # 6) Model spawned a background sub-agent without sending an upfront padding bubble or text

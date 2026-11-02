@@ -21,6 +21,7 @@ _BUILTIN_COMMANDS: frozenset[str] = frozenset(
         "memories",
         "forget",
         "profile",
+        "tier",
         "help",
     }
 )
@@ -41,8 +42,64 @@ _HELP_TEXT = (
     "/memories - 查看当前可见的长期记忆列表\n"
     "/forget <ID> - 按数字 ID 删除长期记忆\n"
     "/profile <QQ号> <画像备注> - 设置群友跨会话画像备注\n"
+    "/tier [群号] [high|medium|low|passive|default] - 查看或动态切换群聊激发档位\n"
     "/help - 查看管理命令帮助说明"
 )
+
+
+def handle_trigger_tier_command(trigger: object, msg: InboundMessage, arg_text: str) -> str:
+    """Format or update per-group trigger tier via `/tier [group_id] [high|medium|low|passive|default]`."""
+    profile_for_fn = getattr(trigger, "profile_for_group", None)
+    set_tier_fn = getattr(trigger, "set_group_tier", None)
+    list_tiers_fn = getattr(trigger, "list_group_tiers", None)
+    if not callable(profile_for_fn) or not callable(set_tier_fn):
+        return "当前触发器不支持群聊激发分级。"
+
+    def _fmt_prof(gid: int, p: object) -> str:
+        tier_label = getattr(p, "tier", getattr(p, "tier_name", "default"))
+        return (
+            f"群 {gid} 激发档位：{tier_label}\n"
+            f"- 追问窗口：{getattr(p, 'followup_window_s', 0):.0f}s（最多 {getattr(p, 'max_followup_turns', 0)} 轮）\n"
+            f"- 兴趣词接话率：{getattr(p, 'topic_prob', 0):.0%}\n"
+            f"- 随机插话率：{getattr(p, 'proactive_prob', 0):.0%}\n"
+            f"- 保底水群间隔：{getattr(p, 'proactive_every_n', 0)} 条（冷却 {getattr(p, 'proactive_cooldown_s', 0):.0f}s）"
+        )
+
+    tokens = arg_text.strip().split()
+    if not tokens:
+        tiers_map = list_tiers_fn() if callable(list_tiers_fn) else {}
+        overrides = (
+            "、".join(f"{g}:{t}" for g, t in sorted(tiers_map.items()))
+            if tiers_map
+            else "无（全部走全局默认）"
+        )
+        if msg.chat_type == "group" and msg.group_id is not None:
+            prof = profile_for_fn(msg.group_id)
+            return f"{_fmt_prof(msg.group_id, prof)}\n已配置分级覆盖：{overrides}"
+        return f"当前群聊分级覆盖：{overrides}\n用法：/tier [群号] <high|medium|low|passive|default>"
+
+    if len(tokens) == 1:
+        tok = tokens[0].strip()
+        if tok.isdigit():
+            gid = int(tok)
+            return _fmt_prof(gid, profile_for_fn(gid))
+        if msg.chat_type == "group" and msg.group_id is not None:
+            try:
+                updated = set_tier_fn(msg.group_id, tok)
+                return f"已动态切换{_fmt_prof(msg.group_id, updated)}"
+            except ValueError as exc:
+                return f"切换失败：{exc}（可选：high / medium / low / passive / default）"
+        return "私聊请指定群号：/tier <群号> <high|medium|low|passive|default>"
+
+    gid_str, tier_str = tokens[0].strip(), tokens[1].strip()
+    if not gid_str.isdigit():
+        return "用法：/tier <群号> <high|medium|low|passive|default>（群号须为纯数字）"
+    gid = int(gid_str)
+    try:
+        updated = set_tier_fn(gid, tier_str)
+    except ValueError as exc:
+        return f"切换失败：{exc}（可选：high / medium / low / passive / default）"
+    return f"已动态切换{_fmt_prof(gid, updated)}"
 
 
 def _format_micros_usd(micros: int) -> str:
@@ -67,6 +124,7 @@ class AdminCommandRouter:
         on_profile: Callable[[int, str], str] | None = None,
         on_stop: Callable[[str], tuple[bool, int]] | None = None,
         on_status: Callable[[str], str] | None = None,
+        on_tier: Callable[[InboundMessage, str], str] | None = None,
     ) -> None:
         self.admin_user_ids: set[int] = set(admin_user_ids)
         self._on_reset = on_reset
@@ -80,6 +138,7 @@ class AdminCommandRouter:
         self._on_profile = on_profile
         self._on_stop = on_stop
         self._on_status = on_status
+        self._on_tier = on_tier
 
     @staticmethod
     def _extract_command_and_args(msg: InboundMessage) -> tuple[str, str] | None:
@@ -459,6 +518,19 @@ class AdminCommandRouter:
 
         if cmd == "profile":
             return self._handle_profile(arg_text)
+
+        if cmd == "tier":
+            if self._on_tier is None:
+                return CommandResult(
+                    handled=True,
+                    reply_text="群聊激发分级功能尚未绑定。",
+                    command_name="tier",
+                )
+            return CommandResult(
+                handled=True,
+                reply_text=self._on_tier(msg, arg_text),
+                command_name="tier",
+            )
 
         # cmd == "help"
         return CommandResult(
